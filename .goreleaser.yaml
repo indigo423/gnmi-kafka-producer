@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: Apache-2.0
+# GoReleaser config — https://goreleaser.com
+#
+# Only the gateway is released (binaries + image). The driver is a local test
+# fixture — it flaps interfaces on the srlinux test device to generate
+# telemetry — and is built only via docker compose, never published.
+version: 2
+
+project_name: gnmi-kafka-producer
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: gateway
+    main: ./cmd/gateway
+    binary: gateway
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: default
+    ids: [gateway]
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+# One image per arch, joined into a multi-arch manifest.
+dockers:
+  - id: gateway-amd64
+    use: buildx
+    ids: [gateway]
+    goarch: amd64
+    dockerfile: cmd/gateway/Dockerfile.goreleaser
+    image_templates:
+      - "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}-gateway:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+  - id: gateway-arm64
+    use: buildx
+    ids: [gateway]
+    goarch: arm64
+    dockerfile: cmd/gateway/Dockerfile.goreleaser
+    image_templates:
+      - "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}-gateway:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+docker_manifests:
+  - name_template: "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}-gateway:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}-gateway:{{ .Version }}-amd64"
+      - "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}-gateway:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}-gateway:latest"
+    skip_push: auto   # don't move :latest onto prereleases/snapshots
+    image_templates:
+      - "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}-gateway:{{ .Version }}-amd64"
+      - "ghcr.io/{{ tolower .Env.GITHUB_REPOSITORY }}-gateway:{{ .Version }}-arm64"
+
+release:
+  draft: false
+  prerelease: auto

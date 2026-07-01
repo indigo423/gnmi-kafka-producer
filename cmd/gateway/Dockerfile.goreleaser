@@ -1,0 +1,5 @@
+# Consumed by GoReleaser: copies the pre-built binary into a distroless image.
+FROM gcr.io/distroless/static:nonroot
+COPY gateway /gateway
+USER nonroot:nonroot
+ENTRYPOINT ["/gateway"]
