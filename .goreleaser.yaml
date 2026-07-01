@@ -38,9 +38,6 @@ archives:
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
-    format_overrides:
-      - goos: windows
-        formats: [zip]
 
 checksum:
   name_template: checksums.txt
@@ -61,6 +58,7 @@ changelog:
 # One image per binary, built per-arch then joined into a multi-arch manifest.
 dockers:
   - id: driver-amd64
+    use: buildx
     ids: [driver]
     goarch: amd64
     dockerfile: cmd/driver/Dockerfile.goreleaser
@@ -74,6 +72,7 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
 
   - id: driver-arm64
+    use: buildx
     ids: [driver]
     goarch: arm64
     dockerfile: cmd/driver/Dockerfile.goreleaser
@@ -87,6 +86,7 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
 
   - id: gateway-amd64
+    use: buildx
     ids: [gateway]
     goarch: amd64
     dockerfile: cmd/gateway/Dockerfile.goreleaser
@@ -100,6 +100,7 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
 
   - id: gateway-arm64
+    use: buildx
     ids: [gateway]
     goarch: arm64
     dockerfile: cmd/gateway/Dockerfile.goreleaser
@@ -118,6 +119,7 @@ docker_manifests:
       - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-amd64"
       - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-arm64"
   - name_template: "ghcr.io/indigo423/gnmi-kafka-producer-driver:latest"
+    skip_push: auto   # don't move :latest onto prereleases/snapshots
     image_templates:
       - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-amd64"
       - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-arm64"
@@ -126,6 +128,7 @@ docker_manifests:
       - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-amd64"
       - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-arm64"
   - name_template: "ghcr.io/indigo423/gnmi-kafka-producer-gateway:latest"
+    skip_push: auto   # don't move :latest onto prereleases/snapshots
     image_templates:
       - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-amd64"
       - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-arm64"
