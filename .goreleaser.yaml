@@ -1,0 +1,135 @@
+# SPDX-License-Identifier: Apache-2.0
+# GoReleaser config — https://goreleaser.com
+version: 2
+
+project_name: gnmi-kafka-producer
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: driver
+    main: ./cmd/driver
+    binary: driver
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+  - id: gateway
+    main: ./cmd/gateway
+    binary: gateway
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+# One image per binary, built per-arch then joined into a multi-arch manifest.
+dockers:
+  - id: driver-amd64
+    ids: [driver]
+    goarch: amd64
+    dockerfile: cmd/driver/Dockerfile.goreleaser
+    image_templates:
+      - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.source=https://github.com/indigo423/gnmi-kafka-producer"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+  - id: driver-arm64
+    ids: [driver]
+    goarch: arm64
+    dockerfile: cmd/driver/Dockerfile.goreleaser
+    image_templates:
+      - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.source=https://github.com/indigo423/gnmi-kafka-producer"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+  - id: gateway-amd64
+    ids: [gateway]
+    goarch: amd64
+    dockerfile: cmd/gateway/Dockerfile.goreleaser
+    image_templates:
+      - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.source=https://github.com/indigo423/gnmi-kafka-producer"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+  - id: gateway-arm64
+    ids: [gateway]
+    goarch: arm64
+    dockerfile: cmd/gateway/Dockerfile.goreleaser
+    image_templates:
+      - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.source=https://github.com/indigo423/gnmi-kafka-producer"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+
+docker_manifests:
+  - name_template: "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-amd64"
+      - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/indigo423/gnmi-kafka-producer-driver:latest"
+    image_templates:
+      - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-amd64"
+      - "ghcr.io/indigo423/gnmi-kafka-producer-driver:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-amd64"
+      - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/indigo423/gnmi-kafka-producer-gateway:latest"
+    image_templates:
+      - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-amd64"
+      - "ghcr.io/indigo423/gnmi-kafka-producer-gateway:{{ .Version }}-arm64"
+
+release:
+  draft: false
+  prerelease: auto
