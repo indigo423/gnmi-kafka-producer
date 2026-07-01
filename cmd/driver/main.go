@@ -56,7 +56,7 @@ func runHost(ctx context.Context, host string, cfg *config.Driver) {
 		log.Printf("[%s] dial gave up: %v", host, err)
 		return
 	}
-	defer tg.Close()
+	defer func() { _ = tg.Close() }()
 
 	var wg sync.WaitGroup
 	for _, iface := range cfg.Flap.Interfaces {

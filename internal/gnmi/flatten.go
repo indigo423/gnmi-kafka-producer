@@ -85,7 +85,7 @@ func EncodeValue(tv *gnmipb.TypedValue) json.RawMessage {
 	case *gnmipb.TypedValue_BoolVal:
 		return mustJSON(v.BoolVal)
 	case *gnmipb.TypedValue_FloatVal:
-		return mustJSON(v.FloatVal)
+		return mustJSON(v.FloatVal) //nolint:staticcheck // deprecated upstream but still emitted by some targets; handled for compatibility
 	case *gnmipb.TypedValue_DoubleVal:
 		return mustJSON(v.DoubleVal)
 	case *gnmipb.TypedValue_BytesVal:

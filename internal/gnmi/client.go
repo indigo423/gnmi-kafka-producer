@@ -48,7 +48,7 @@ func Dial(ctx context.Context, host string, g config.GNMI) (*target.Target, erro
 			return tg, nil
 		} else {
 			lastErr = err
-			tg.Close()
+			_ = tg.Close()
 		}
 		log.Printf("[%s] dial attempt %d failed: %v", host, attempt, lastErr)
 		select {

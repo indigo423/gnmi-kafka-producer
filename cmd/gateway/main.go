@@ -54,7 +54,7 @@ func runHost(ctx context.Context, host string, g config.GNMI, paths []string, pr
 		log.Printf("[%s] dial gave up: %v", host, err)
 		return
 	}
-	defer tg.Close()
+	defer func() { _ = tg.Close() }()
 
 	req, err := gnmix.BuildSubscribeRequest(g, paths)
 	if err != nil {

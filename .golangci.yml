@@ -10,6 +10,12 @@ linters:
     - revive
     - unconvert
     - unparam
+  exclusions:
+    rules:
+      # Keep revive's checks, but don't require godoc comments on every
+      # exported symbol / package — the codebase intentionally omits them.
+      - linters: [revive]
+        text: '^(exported|package-comments):'
 
 formatters:
   enable:

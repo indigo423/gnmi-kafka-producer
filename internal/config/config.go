@@ -60,7 +60,7 @@ func (f *Flap) applyDefaults() {
 
 // loadYAML reads and unmarshals a file into v.
 func loadYAML(path string, v any) error {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is an operator-supplied -config flag, not untrusted input
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
