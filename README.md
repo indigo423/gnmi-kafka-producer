@@ -91,35 +91,47 @@ with a self-signed cert (`skip_verify: true`) and no authentication.
 
 ## Output format
 
-One JSON record per leaf Update, keyed by `device|interface|leaf`. The record is
-**enriched for direct visualization**: the metric identity is promoted to `device`
-and `interface` labels, and the value is emitted under a metric-named key so the
-Grafana Kafka datasource plugin turns each numeric field into a named series.
+One JSON record per leaf Update, keyed by `device|interface`. Each record carries
+the **full last-known state of its interface** — every leaf seen so far, not just
+the leaf that triggered it — so the field set is identical across messages:
 
 ```json
 {
-  "device":        "192.168.100.1",
-  "interface":     "TenGigE0/0/0/0",
-  "in_octets":     89115667333884,
-  "in_octets_bps": 8123.4,
-  "timestamp":     "2026-06-26T08:10:01.234567890Z"
+  "device":         "192.168.100.1",
+  "interface":      "TenGigE0/0/0/0",
+  "admin_status":   1,
+  "oper_status":    1,
+  "in_octets":      89115667333884,
+  "in_octets_bps":  8123.4,
+  "out_octets":     90470118138447,
+  "out_octets_bps": 9801963523.7,
+  "timestamp":      "2026-06-26T08:10:01.234567890Z"
 }
 ```
 
-- **Labels** — `device` (the host string from config) and `interface` (parsed from
-  the gNMI path key) are strings, so the plugin treats them as series labels.
+The stable field set is what makes the live dashboard work: the Grafana Kafka
+datasource streams each message as a data frame, and Grafana's streaming buffer
+drops any field that is missing from the latest message's schema. Per-metric
+records (the previous shape) made the schema flip on every message and wiped the
+numeric columns. The plugin does **not** turn string fields into series labels;
+the dashboard splits per interface with a `partitionByValues` transformation on
+`device` + `interface` instead.
+
 - **Metric key** — the leaf name with `-`→`_` (e.g. `in_octets`), carrying the raw
   value as a JSON number.
 - **Rate** — for octet counters, `<metric>_bps` = Δvalue ÷ Δt × 8 is computed at the
   source (the gateway keeps the last sample per series). It is omitted on the first
-  sample and on a counter reset.
+  sample and on a counter reset (and dropped from the merged state until the next
+  valid delta).
 - **Status** — `oper-status`/`admin-status` are emitted as numeric `oper_status`/
-  `admin_status` (`UP` → 1, otherwise 0) so they are chartable.
-- **Deletes** evict the series' rate state and produce no record.
+  `admin_status` (`UP` → 1, otherwise 0) so they are chartable. A YANG module
+  prefix on the enum (`openconfig-interfaces:UP`, as nl6 sends it) is ignored.
+- **Deletes** evict the leaf's rate and merged state and produce no record.
 
-> **Breaking change**: this replaces the earlier flat `{target, path, value}` record.
-> Any consumer of the old shape must be updated. Only `kafka-ui` (schema-agnostic) and
-> the Grafana dashboard read this topic in the demo.
+> **Breaking change**: this replaces the earlier one-metric-per-message record
+> (and before that, the flat `{target, path, value}` record). Any consumer of the
+> old shapes must be updated. Only `kafka-ui` (schema-agnostic) and the Grafana
+> dashboard read this topic in the demo.
 
 ## Commands
 

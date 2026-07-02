@@ -15,10 +15,12 @@ import (
 )
 
 // Record is one enriched sample produced to Kafka. Key is the Kafka message key
-// (device|interface|leaf, for stable per-series ordering); Fields is the JSON
-// body. The body uses dynamic, metric-named numeric keys (e.g. "in_octets",
-// "in_octets_bps") so the Grafana Kafka datasource plugin turns each numeric
-// field into a named series, with "device" and "interface" as string labels.
+// (device|interface, for stable per-interface ordering); Fields is the JSON
+// body. The body carries the last-known value of every leaf seen for the
+// interface (e.g. "in_octets", "in_octets_bps", "oper_status"), not just the
+// leaf that triggered it: the Grafana Kafka datasource streams each message as
+// a data frame and drops fields absent from the latest schema, so the field
+// set must stay identical across messages.
 type Record struct {
 	Key    string
 	Fields map[string]any
@@ -28,10 +30,12 @@ type Record struct {
 func (r Record) MarshalJSON() ([]byte, error) { return json.Marshal(r.Fields) }
 
 // Enricher turns gNMI Notifications into enriched Records, holding the per-series
-// state needed to compute counter rates. It is NOT safe for concurrent use; the
-// gateway gives each host its own Enricher (one per runHost goroutine).
+// state needed to compute counter rates and the per-interface merged state
+// emitted with every Record. It is NOT safe for concurrent use; the gateway
+// gives each host its own Enricher (one per runHost goroutine).
 type Enricher struct {
-	last map[string]counterSample
+	last  map[string]counterSample
+	state map[string]map[string]any // device|interface → last-known metric values
 }
 
 type counterSample struct {
@@ -40,7 +44,10 @@ type counterSample struct {
 }
 
 func NewEnricher() *Enricher {
-	return &Enricher{last: make(map[string]counterSample)}
+	return &Enricher{
+		last:  make(map[string]counterSample),
+		state: make(map[string]map[string]any),
+	}
 }
 
 // FromNotification flattens a single gNMI Notification into enriched Records —
@@ -64,44 +71,74 @@ func (e *Enricher) FromNotification(device string, n *gnmipb.Notification) []Rec
 	for _, d := range n.GetDelete() {
 		iface, leaf, _ := parsePath(prefix, d)
 		delete(e.last, seriesKey(device, iface, leaf)) // bound the state map
+		metric := strings.ReplaceAll(leaf, "-", "_")
+		if st, ok := e.state[stateKey(device, iface)]; ok {
+			delete(st, metric)
+			delete(st, metric+"_bps")
+			if len(st) == 0 {
+				delete(e.state, stateKey(device, iface))
+			}
+		}
 	}
 	return out
 }
 
-// enrich builds one Record from a single leaf Update.
+// enrich merges a single leaf Update into the interface's state and builds one
+// Record carrying the full last-known state, so every Record has the same
+// field set regardless of which leaf triggered it.
 func (e *Enricher) enrich(device, iface, leaf string, tv *gnmipb.TypedValue, ts time.Time, tsStr string) *Record {
 	metric := strings.ReplaceAll(leaf, "-", "_")
-	fields := map[string]any{"device": device, "timestamp": tsStr}
-	if iface != "" {
-		fields["interface"] = iface
-	}
-
 	raw := EncodeValue(tv)
+
+	sk := stateKey(device, iface)
+	st := e.state[sk]
+	if st == nil {
+		st = make(map[string]any)
+		e.state[sk] = st
+	}
 
 	switch leaf {
 	case "oper-status", "admin-status":
 		// Status is a string enum; map to numeric so it is chartable (UP=1).
+		// JSON_IETF may qualify the enum with its YANG module
+		// ("openconfig-interfaces:UP"), so compare only the local part.
 		s, ok := stringVal(raw)
 		if !ok {
 			return nil
 		}
-		fields[metric] = boolToInt(strings.EqualFold(s, "UP"))
+		if i := strings.LastIndexByte(s, ':'); i >= 0 {
+			s = s[i+1:]
+		}
+		st[metric] = boolToInt(strings.EqualFold(s, "UP"))
 	default:
 		num, f, ok := numeric(raw)
 		if !ok {
 			// Non-numeric, non-status leaf: pass the value through unchanged.
-			fields[metric] = raw
+			st[metric] = raw
 			break
 		}
-		fields[metric] = num
+		st[metric] = num
 		// Octet counters are monotonic — emit a bits/sec rate for throughput.
 		if strings.Contains(leaf, "octets") {
 			if bps, ok := e.rate(seriesKey(device, iface, leaf), f, ts); ok {
-				fields[metric+"_bps"] = bps
+				st[metric+"_bps"] = bps
+			} else {
+				// First sample or counter reset: the last rate no longer holds.
+				delete(st, metric+"_bps")
 			}
 		}
 	}
-	return &Record{Key: seriesKey(device, iface, leaf), Fields: fields}
+
+	fields := make(map[string]any, len(st)+3)
+	for k, v := range st {
+		fields[k] = v
+	}
+	fields["device"] = device
+	fields["timestamp"] = tsStr
+	if iface != "" {
+		fields["interface"] = iface
+	}
+	return &Record{Key: sk, Fields: fields}
 }
 
 // rate returns the per-second bit rate between the previous and current counter
@@ -123,6 +160,10 @@ func (e *Enricher) rate(key string, value float64, ts time.Time) (float64, bool)
 
 func seriesKey(device, iface, leaf string) string {
 	return device + "|" + iface + "|" + leaf
+}
+
+func stateKey(device, iface string) string {
+	return device + "|" + iface
 }
 
 // parsePath walks prefix then path elems, returning the interface name (from an
