@@ -1,0 +1,92 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "liveNow": true,
+  "refresh": "",
+  "schemaVersion": 39,
+  "tags": ["gnmi", "kafka", "telemetry"],
+  "time": { "from": "now-5m", "to": "now" },
+  "timepicker": {},
+  "title": "gNMI Telemetry (live)",
+  "uid": "gnmi-telemetry",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Interface throughput (bits/sec)",
+      "type": "timeseries",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-gnmi" },
+      "description": "Streamed from gnmi.telemetry. Per-interface in/out rate computed at the source (in_octets_bps, out_octets_bps).",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "spanNulls": true, "showPoints": "never", "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["last"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-gnmi" },
+          "topicName": "gnmi.telemetry",
+          "partition": "all",
+          "autoOffsetReset": "latest",
+          "timestampMode": "message",
+          "messageFormat": "json",
+          "keyFormat": "string"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": { "include": { "pattern": "(?i)(time|.*_bps)" } }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Interface oper/admin status (1 = up)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 10 },
+      "datasource": { "type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-gnmi" },
+      "description": "oper_status / admin_status mapped to 1 (UP) / 0 (other) at the source.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "spanNulls": true, "showPoints": "always", "fillOpacity": 20 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["last"] },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-gnmi" },
+          "topicName": "gnmi.telemetry",
+          "partition": "all",
+          "autoOffsetReset": "latest",
+          "timestampMode": "message",
+          "messageFormat": "json",
+          "keyFormat": "string"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": { "include": { "pattern": "(?i)(time|.*_status)" } }
+        }
+      ]
+    }
+  ]
+}

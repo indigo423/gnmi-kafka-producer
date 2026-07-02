@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+# Provisions the Kafka datasource so the dashboard works on first start.
+# The backend plugin connects Grafana directly to the broker on demo-net.
+apiVersion: 1
+
+datasources:
+  - name: Kafka
+    uid: kafka-gnmi
+    type: hamedkarbasi93-kafka-datasource
+    access: proxy
+    isDefault: true
+    editable: true
+    jsonData:
+      bootstrapServers: kafka:9092
+      securityProtocol: PLAINTEXT
+      saslMechanisms: ""
+      healthcheckTimeout: 2000
