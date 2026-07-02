@@ -11,11 +11,13 @@ flowchart LR
     NL6[(nl6 simulator)]
     K[(kafka)]
     UI[kafka-ui :8080]
+    GF[grafana :3000]
 
     gconf --> GW
     GW -- Subscribe --> NL6
     GW -- produce JSON --> K
     K --> UI
+    K -- Kafka datasource --> GF
 ```
 
 ## Components
@@ -36,11 +38,13 @@ flowchart TB
 
     subgraph ui["UI"]
         UI["kafka-ui<br/>ghcr.io/kafbat/kafka-ui:latest<br/>kafbat web UI<br/>:8080 host"]
+        GF["grafana<br/>grafana/grafana:13.1.0<br/>+ kafka-datasource plugin<br/>live dashboard :3000 host"]
     end
 
     GW -- gNMI --> NL6
     GW -- produce --> K
     UI -- read --> K
+    GF -- stream (Kafka datasource) --> K
 ```
 
 ## Quickstart
@@ -49,6 +53,7 @@ flowchart TB
 make up                       # docker compose up -d --build
 make ps                       # watch services come healthy
 open http://localhost:8080    # kafbat: cluster "demo", topic "gnmi.telemetry"
+open http://localhost:3000    # grafana: "gNMI Telemetry (live)" dashboard (anonymous)
 ```
 
 [nl6](https://nl6.eu) boots in seconds and emits self-animating telemetry
@@ -86,20 +91,35 @@ with a self-signed cert (`skip_verify: true`) and no authentication.
 
 ## Output format
 
-One JSON record per leaf Update, keyed by gNMI path:
+One JSON record per leaf Update, keyed by `device|interface|leaf`. The record is
+**enriched for direct visualization**: the metric identity is promoted to `device`
+and `interface` labels, and the value is emitted under a metric-named key so the
+Grafana Kafka datasource plugin turns each numeric field into a named series.
 
 ```json
 {
-  "target":    "192.168.100.1",
-  "path":      "/interfaces/interface[name=TenGigE0/0/0/0]/state/counters/out-octets",
-  "value":     "89115667333884",
-  "timestamp": "2026-06-26T08:10:01.234567890Z"
+  "device":        "192.168.100.1",
+  "interface":     "TenGigE0/0/0/0",
+  "in_octets":     89115667333884,
+  "in_octets_bps": 8123.4,
+  "timestamp":     "2026-06-26T08:10:01.234567890Z"
 }
 ```
 
-`target` is the host string from the config. `value` is the typed value from
-the gNMI `TypedValue` oneof: scalars become JSON primitives, `JSON_IETF`
-sub-trees pass through as objects.
+- **Labels** — `device` (the host string from config) and `interface` (parsed from
+  the gNMI path key) are strings, so the plugin treats them as series labels.
+- **Metric key** — the leaf name with `-`→`_` (e.g. `in_octets`), carrying the raw
+  value as a JSON number.
+- **Rate** — for octet counters, `<metric>_bps` = Δvalue ÷ Δt × 8 is computed at the
+  source (the gateway keeps the last sample per series). It is omitted on the first
+  sample and on a counter reset.
+- **Status** — `oper-status`/`admin-status` are emitted as numeric `oper_status`/
+  `admin_status` (`UP` → 1, otherwise 0) so they are chartable.
+- **Deletes** evict the series' rate state and produce no record.
+
+> **Breaking change**: this replaces the earlier flat `{target, path, value}` record.
+> Any consumer of the old shape must be updated. Only `kafka-ui` (schema-agnostic) and
+> the Grafana dashboard read this topic in the demo.
 
 ## Commands
 
@@ -118,7 +138,8 @@ make down                                  # tear down
 ├── configs/
 │   └── gateway.yaml          # gateway config
 ├── e2e/
-│   └── compose.yml           # end-to-end demo stack
+│   ├── compose.yml           # end-to-end demo stack
+│   └── grafana/              # provisioned datasource + live dashboard
 ├── Makefile
 ├── README.md
 ├── go.mod / go.sum
