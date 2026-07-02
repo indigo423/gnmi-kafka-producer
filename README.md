@@ -1,6 +1,6 @@
 # gnmi-kafka-producer
 
-Docker-compose stack that streams gNMI telemetry from network devices into
+Docker Compose stack that streams gNMI telemetry from network devices into
 Kafka. Each service reads its own YAML config so the gateway and driver can be
 deployed and reconfigured independently.
 
@@ -62,8 +62,8 @@ The healthcheck `start_period` is 600s. The gateway and driver both retry the
 initial gNMI dial, so you can start them before SR Linux is fully ready:
 
 ```sh
-docker compose up -d --no-deps kafka kafka-ui srlinux
-docker compose up -d --no-deps gateway driver
+docker compose -f e2e/compose.yml up -d --no-deps kafka kafka-ui srlinux
+docker compose -f e2e/compose.yml up -d --no-deps gateway driver
 ```
 
 ## Configuration
@@ -90,15 +90,15 @@ flap:     { enabled: true, interval: 10s, interfaces: [ethernet-1/1] }
 ```
 
 Two files, not one, so each service can be deployed independently. In
-docker-compose each file is bind-mounted; in Kubernetes each becomes its own
+Docker Compose each file is bind-mounted; in Kubernetes each becomes its own
 ConfigMap. `gnmi:` and `hosts:` are duplicated by design.
 
 - **Add hosts**: append to `hosts:` in both files. The gateway dials all hosts
   concurrently; the driver flaps the configured interfaces on every host.
 - **Change paths or sample interval**: edit `configs/gateway.yaml`, then
-  `docker compose restart gateway`. No rebuild.
+  `docker compose -f e2e/compose.yml restart gateway`. No rebuild.
 - **Point at a real device**: remove the `srlinux` service from
-  `docker-compose.yml`, put the device address in both files' `hosts:`, ensure
+  `e2e/compose.yml`, put the device address in both files' `hosts:`, ensure
   the gateway container can route to it.
 - **Production**: move `gnmi.password` to a Kubernetes Secret or env var. The
   current loader reads the password verbatim from YAML, which is fine for a
@@ -126,9 +126,9 @@ sub-trees pass through as objects.
 ```sh
 make logs                                  # tail all services
 make tail-topic                            # console-consumer dump of first 50 records
-docker compose logs -f gateway
-docker compose logs -f driver
-docker compose exec srlinux sr_cli         # SR Linux CLI inside the container
+docker compose -f e2e/compose.yml logs -f gateway
+docker compose -f e2e/compose.yml logs -f driver
+docker compose -f e2e/compose.yml exec srlinux sr_cli   # SR Linux CLI inside the container
 make down                                  # tear down
 ```
 
@@ -139,7 +139,8 @@ make down                                  # tear down
 ├── configs/
 │   ├── gateway.yaml          # gateway config
 │   └── driver.yaml           # driver config
-├── docker-compose.yml
+├── e2e/
+│   └── compose.yml           # end-to-end demo stack
 ├── Makefile
 ├── README.md
 ├── go.mod / go.sum
@@ -171,4 +172,4 @@ make down                                  # tear down
   and configure an `insecure-mgmt` grpc-server on the device.
 - Kafka data lives in the container layer. `make down` wipes everything.
 - `srlinux:25.7.2` and `kafka:3.9.1` are pinned. `kafka-ui` tracks `latest`.
-  Change in `docker-compose.yml`.
+  Change in `e2e/compose.yml`.
