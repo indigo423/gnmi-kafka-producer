@@ -89,3 +89,23 @@ services:
     ports:
       - "8080:8080"
     networks: [demo-net]
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    container_name: grafana
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      # Backend Kafka datasource plugin (pinned); the version follows the plugin id.
+      GF_INSTALL_PLUGINS: "hamedkarbasi93-kafka-datasource 1.6.0"
+      # Demo convenience: no login wall.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks: [demo-net]

@@ -67,6 +67,9 @@ func runHost(ctx context.Context, host string, g config.GNMI, paths []string, pr
 	go tg.Subscribe(ctx, req, "main")
 	rspCh, errCh := tg.ReadSubscriptions()
 
+	// Each host owns its Enricher, so rate state needs no locking.
+	enricher := gnmix.NewEnricher()
+
 	log.Printf("[%s] subscribed", host)
 	for {
 		select {
@@ -84,13 +87,13 @@ func runHost(ctx context.Context, host string, g config.GNMI, paths []string, pr
 			if notif == nil {
 				continue
 			}
-			for _, rec := range gnmix.FromNotification(host, notif) {
+			for _, rec := range enricher.FromNotification(host, notif) {
 				body, err := json.Marshal(rec)
 				if err != nil {
 					log.Printf("[%s] marshal: %v", host, err)
 					continue
 				}
-				producer.Send(ctx, []byte(rec.Path), body)
+				producer.Send(ctx, []byte(rec.Key), body)
 			}
 		}
 	}
