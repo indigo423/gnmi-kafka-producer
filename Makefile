@@ -28,7 +28,6 @@ test:
 	$(GO) test -race -coverprofile=coverage.out ./...
 
 build:
-	CGO_ENABLED=0 $(GO) build -o $(BIN)/driver ./cmd/driver
 	CGO_ENABLED=0 $(GO) build -o $(BIN)/gateway ./cmd/gateway
 
 ## verify runs the full quality gate CI depends on
