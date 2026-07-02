@@ -85,23 +85,3 @@ func BuildSubscribeRequest(g config.GNMI, paths []string) (*gnmipb.SubscribeRequ
 	}
 	return req, nil
 }
-
-// SetAdminState issues a gNMI Set against the target to flip an interface's admin-state
-// (plus its subinterface 0). Path/value format matches SR Linux native YANG.
-func SetAdminState(ctx context.Context, tg *target.Target, iface, state string) error {
-	req, err := api.NewSetRequest(
-		api.Update(
-			api.Path(fmt.Sprintf("/interface[name=%s]/admin-state", iface)),
-			api.Value(state, "json_ietf"),
-		),
-		api.Update(
-			api.Path(fmt.Sprintf("/interface[name=%s]/subinterface[index=0]/admin-state", iface)),
-			api.Value(state, "json_ietf"),
-		),
-	)
-	if err != nil {
-		return fmt.Errorf("build set req: %w", err)
-	}
-	_, err = tg.Set(ctx, req)
-	return err
-}

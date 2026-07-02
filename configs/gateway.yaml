@@ -6,28 +6,32 @@ kafka:
   topic: gnmi.telemetry
 
 # Shared gNMI dial + subscription settings, applied to every host.
-# (In k8s, move username/password to a Secret and inject via env or projected
-# volume; the loader reads ${VAR} expansions if you'd like that wired up.)
+# nl6 requires no authentication and serves gNMI over TLS on port 9339.
 gnmi:
-  port: 57400
-  username: admin
-  password: NokiaSrl1!
-  skip_verify: true        # TLS with no cert verification (demo)
+  port: 9339
+  username: ""             # nl6 has no auth
+  password: ""
+  skip_verify: true        # TLS with no cert verification (nl6 uses a self-signed cert)
   insecure: false          # set true to use plaintext gNMI instead of TLS
   encoding: json_ietf
   dial_timeout: 10s
   sample_interval: 5s      # applied to every path in `paths:` below
 
-# gNMI paths the gateway subscribes to on every host.
+# gNMI paths the gateway subscribes to on every host. nl6 exposes the OpenConfig
+# interfaces model (read-only). Fuller leaf list at https://nl6.eu (gNMI reference):
+# ifindex, last-change, and the full counters/* set (unicast/multicast/broadcast
+# pkts, discards, errors) are also available.
 paths:
-  - /interface[name=*]/admin-state
-  - /interface[name=*]/oper-state
-  - /interface[name=*]/statistics/in-octets
-  - /interface[name=*]/statistics/out-octets
+  - /interfaces/interface[name=*]/state/admin-status
+  - /interfaces/interface[name=*]/state/oper-status
+  - /interfaces/interface[name=*]/state/counters/in-octets
+  - /interfaces/interface[name=*]/state/counters/out-octets
 
 # Hosts to poll. Address only — port comes from gnmi.port above (override
-# inline by writing "host:port"). Hosts are dialed concurrently.
+# inline by writing "host:port"). Hosts are dialed concurrently. These are nl6's
+# auto-created per-device TUN IPs, reachable because the gateway shares nl6's
+# network namespace (see e2e/compose.yml).
 hosts:
-  - srlinux
-  # - srlinux-2
-  # - 192.0.2.10
+  - 192.168.100.1
+  # - 192.168.100.2
+  # - 192.168.100.3

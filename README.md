@@ -1,23 +1,19 @@
 # gnmi-kafka-producer
 
-Docker Compose stack that streams gNMI telemetry from network devices into
-Kafka. Each service reads its own YAML config so the gateway and driver can be
-deployed and reconfigured independently.
+Docker Compose stack that streams gNMI telemetry from a network simulator into
+Kafka. The gateway reads a single YAML config and can be deployed and
+reconfigured independently.
 
 ```mermaid
 flowchart LR
     gconf[configs/gateway.yaml]
-    dconf[configs/driver.yaml]
     GW[gateway]
-    DR[driver]
-    SR[(srlinux)]
+    NL6[(nl6 simulator)]
     K[(kafka)]
     UI[kafka-ui :8080]
 
     gconf --> GW
-    dconf --> DR
-    GW -- Subscribe --> SR
-    DR -- Set --> SR
+    GW -- Subscribe --> NL6
     GW -- produce JSON --> K
     K --> UI
 ```
@@ -26,13 +22,12 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph network["network device"]
-        SR["srlinux<br/>ghcr.io/nokia/srlinux:25.7.2<br/>gNMI :57400 (TLS)"]
+    subgraph sim["network simulator"]
+        NL6["nl6<br/>ghcr.io/labmonkeys-space/nl6:latest<br/>gNMI :9339 (TLS), self-animating"]
     end
 
-    subgraph producers["producers (Go, distroless)"]
+    subgraph producer["producer (Go, distroless)"]
         GW["gateway<br/>cmd/gateway<br/>gNMI Subscribe, flatten, produce to Kafka"]
-        DR["driver<br/>cmd/driver<br/>gNMI Set loop, flaps interface admin-state"]
     end
 
     subgraph transport["transport"]
@@ -43,8 +38,7 @@ flowchart TB
         UI["kafka-ui<br/>ghcr.io/kafbat/kafka-ui:latest<br/>kafbat web UI<br/>:8080 host"]
     end
 
-    GW -- gNMI --> SR
-    DR -- gNMI --> SR
+    GW -- gNMI --> NL6
     GW -- produce --> K
     UI -- read --> K
 ```
@@ -57,52 +51,38 @@ make ps                       # watch services come healthy
 open http://localhost:8080    # kafbat: cluster "demo", topic "gnmi.telemetry"
 ```
 
-SR Linux cold boot takes 5-15 min on a laptop (subsequent warm boots ~3 min).
-The healthcheck `start_period` is 600s. The gateway and driver both retry the
-initial gNMI dial, so you can start them before SR Linux is fully ready:
-
-```sh
-docker compose -f e2e/compose.yml up -d --no-deps kafka kafka-ui srlinux
-docker compose -f e2e/compose.yml up -d --no-deps gateway driver
-```
+[nl6](https://nl6.eu) boots in seconds and emits self-animating telemetry
+(cycling interface counters, sine-wave CPU/mem/temp), so there is no separate
+stimulus generator — the data moves on its own. The gateway shares nl6's network
+namespace (`network_mode: "service:nl6"` in the compose file) so it can dial
+nl6's per-device gNMI endpoints.
 
 ## Configuration
 
-Each service has its own file in [`configs/`](./configs).
-
-### configs/gateway.yaml
+The gateway is configured by a single file, [`configs/gateway.yaml`](./configs).
 
 ```yaml
-kafka:    { brokers: ["kafka:9092"], topic: gnmi.telemetry }
-gnmi:     { port: 57400, username: admin, password: NokiaSrl1!,
-            skip_verify: true, encoding: json_ietf, sample_interval: 5s }
-paths:    [/interface[name=*]/admin-state, /interface[name=*]/oper-state, ...]
-hosts:    [srlinux]
+kafka:  { brokers: ["kafka:9092"], topic: gnmi.telemetry }
+gnmi:   { port: 9339, username: "", password: "",
+          skip_verify: true, encoding: json_ietf, sample_interval: 5s }
+paths:  [/interfaces/interface[name=*]/state/oper-status,
+         /interfaces/interface[name=*]/state/counters/in-octets, ...]
+hosts:  [192.168.100.1]
 ```
 
-### configs/driver.yaml
+nl6 exposes the OpenConfig `interfaces` model (read-only) over gNMI on port 9339,
+with a self-signed cert (`skip_verify: true`) and no authentication.
 
-```yaml
-gnmi:     { port: 57400, username: admin, password: NokiaSrl1!,
-            skip_verify: true, encoding: json_ietf }
-hosts:    [srlinux]
-flap:     { enabled: true, interval: 10s, interfaces: [ethernet-1/1] }
-```
-
-Two files, not one, so each service can be deployed independently. In
-Docker Compose each file is bind-mounted; in Kubernetes each becomes its own
-ConfigMap. `gnmi:` and `hosts:` are duplicated by design.
-
-- **Add hosts**: append to `hosts:` in both files. The gateway dials all hosts
-  concurrently; the driver flaps the configured interfaces on every host.
+- **Add devices**: bump `-auto-count` on the `nl6` service in `e2e/compose.yml`
+  and add the extra `192.168.100.x` addresses to `hosts:`. The gateway dials all
+  hosts concurrently.
 - **Change paths or sample interval**: edit `configs/gateway.yaml`, then
-  `docker compose -f e2e/compose.yml restart gateway`. No rebuild.
-- **Point at a real device**: remove the `srlinux` service from
-  `e2e/compose.yml`, put the device address in both files' `hosts:`, ensure
+  `docker compose -f e2e/compose.yml restart gateway`. No rebuild. See
+  [nl6's gNMI reference](https://nl6.eu) for the full leaf list (ifindex,
+  admin/oper-status, last-change, and the complete `counters/*` set).
+- **Point at a real device**: give the `gateway` its own network instead of
+  `network_mode: "service:nl6"`, put the device address in `hosts:`, and ensure
   the gateway container can route to it.
-- **Production**: move `gnmi.password` to a Kubernetes Secret or env var. The
-  current loader reads the password verbatim from YAML, which is fine for a
-  demo only.
 
 ## Output format
 
@@ -110,9 +90,9 @@ One JSON record per leaf Update, keyed by gNMI path:
 
 ```json
 {
-  "target":    "srlinux",
-  "path":      "/srl_nokia-interfaces:interface[name=ethernet-1/1]",
-  "value":     {"oper-state": "down"},
+  "target":    "192.168.100.1",
+  "path":      "/interfaces/interface[name=TenGigE0/0/0/0]/state/counters/out-octets",
+  "value":     "89115667333884",
   "timestamp": "2026-06-26T08:10:01.234567890Z"
 }
 ```
@@ -127,8 +107,7 @@ sub-trees pass through as objects.
 make logs                                  # tail all services
 make tail-topic                            # console-consumer dump of first 50 records
 docker compose -f e2e/compose.yml logs -f gateway
-docker compose -f e2e/compose.yml logs -f driver
-docker compose -f e2e/compose.yml exec srlinux sr_cli   # SR Linux CLI inside the container
+docker compose -f e2e/compose.yml logs -f nl6
 make down                                  # tear down
 ```
 
@@ -137,39 +116,35 @@ make down                                  # tear down
 ```
 .
 ├── configs/
-│   ├── gateway.yaml          # gateway config
-│   └── driver.yaml           # driver config
+│   └── gateway.yaml          # gateway config
 ├── e2e/
 │   └── compose.yml           # end-to-end demo stack
 ├── Makefile
 ├── README.md
 ├── go.mod / go.sum
 ├── cmd/
-│   ├── gateway/              # subscribe loop, one goroutine per host
-│   │   ├── Dockerfile
-│   │   └── main.go
-│   └── driver/               # flap loop, one goroutine per (host, interface)
+│   └── gateway/              # subscribe loop, one goroutine per host
 │       ├── Dockerfile
 │       └── main.go
 └── internal/
     ├── config/
     │   ├── config.go         # shared field types + YAML loader
-    │   ├── gateway.go        # Gateway type, LoadGateway, validate
-    │   └── driver.go         # Driver type, LoadDriver, validate
+    │   └── gateway.go        # Gateway type, LoadGateway, validate
     ├── gnmi/
-    │   ├── client.go         # dial-with-retry, SubscribeRequest builder, Set
+    │   ├── client.go         # dial-with-retry, SubscribeRequest builder
     │   └── flatten.go        # gNMI Notification to []Record, TypedValue cases
     └── kafka/producer.go     # franz-go wrapper
 ```
 
 ## Notes
 
-- The SR Linux gNMI listener runs in the `srbase-mgmt` Linux network
-  namespace, not the container's default netns. The compose healthcheck uses
-  `sudo ip netns exec srbase-mgmt ...` to test it.
-- Factory SR Linux uses a self-signed TLS cert on 57400. `gnmi.skip_verify:
-  true` is the demo setting. For plaintext gNMI, set `gnmi.insecure: true`
-  and configure an `insecure-mgmt` grpc-server on the device.
+- nl6 puts each simulated device on its own IP inside a Linux TUN/network
+  namespace, not on the container's default interface. The `gateway` joins that
+  namespace via `network_mode: "service:nl6"` to reach `192.168.100.x:9339`;
+  Kafka stays reachable because nl6 is on the compose bridge network.
+- nl6's gNMI is read-only (Capabilities/Get/Subscribe; no Set) and serves TLS
+  with a self-signed cert, so the gateway uses `skip_verify: true` and no
+  credentials.
 - Kafka data lives in the container layer. `make down` wipes everything.
-- `srlinux:25.7.2` and `kafka:3.9.1` are pinned. `kafka-ui` tracks `latest`.
-  Change in `e2e/compose.yml`.
+- `kafka:3.9.1` is pinned. `nl6` and `kafka-ui` track `latest`. Change in
+  `e2e/compose.yml`.

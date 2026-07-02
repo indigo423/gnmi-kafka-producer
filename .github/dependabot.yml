@@ -17,7 +17,6 @@ updates:
 
   - package-ecosystem: docker
     directories:
-      - /cmd/driver
       - /cmd/gateway
     schedule:
       interval: weekly

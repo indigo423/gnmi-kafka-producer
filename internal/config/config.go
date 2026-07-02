@@ -1,8 +1,8 @@
-// Package config holds YAML-backed config types for both the gateway and the driver.
+// Package config holds YAML-backed config types for the gateway.
 //
-// Each service has its own config file (and in k8s, its own ConfigMap) so
-// they can be deployed and reconfigured independently. The shared field
-// types (Kafka, GNMI, Flap) keep the YAML shape consistent across services.
+// The gateway reads its config from a file (in k8s, a ConfigMap) so it can be
+// reconfigured independently. The shared field types (Kafka, GNMI) keep the
+// YAML shape consistent.
 package config
 
 import (
@@ -31,15 +31,9 @@ type GNMI struct {
 	SampleInterval time.Duration `yaml:"sample_interval"`
 }
 
-type Flap struct {
-	Enabled    bool          `yaml:"enabled"`
-	Interval   time.Duration `yaml:"interval"`
-	Interfaces []string      `yaml:"interfaces"`
-}
-
 func (g *GNMI) applyDefaults() {
 	if g.Port == 0 {
-		g.Port = 57400
+		g.Port = 9339
 	}
 	if g.Encoding == "" {
 		g.Encoding = "json_ietf"
@@ -49,12 +43,6 @@ func (g *GNMI) applyDefaults() {
 	}
 	if g.SampleInterval == 0 {
 		g.SampleInterval = 5 * time.Second
-	}
-}
-
-func (f *Flap) applyDefaults() {
-	if f.Interval == 0 {
-		f.Interval = 10 * time.Second
 	}
 }
 
