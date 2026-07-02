@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 // Package config holds YAML-backed config types for the gateway.
 //
 // The gateway reads its config from a file (in k8s, a ConfigMap) so it can be
