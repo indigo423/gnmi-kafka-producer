@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # GoReleaser config — https://goreleaser.com
 #
-# Only the gateway is released (binaries + image). The driver is a local test
-# fixture — it flaps interfaces on the srlinux test device to generate
-# telemetry — and is built only via docker compose, never published.
+# Only the gateway is released (binaries + image). The e2e stack (nl6 + Kafka)
+# is a local test harness built only via docker compose, never published.
 version: 2
 
 project_name: gnmi-kafka-producer
