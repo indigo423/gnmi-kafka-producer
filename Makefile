@@ -2,7 +2,7 @@
 .PHONY: up down restart logs ps tail-topic clean \
 	fmt fmt-check vet lint test build verify compose-build
 
-COMPOSE ?= docker compose
+COMPOSE ?= docker compose -f e2e/compose.yml
 TOPIC ?= gnmi.telemetry
 GO ?= go
 BIN ?= bin

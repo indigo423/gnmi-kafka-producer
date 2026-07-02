@@ -30,14 +30,14 @@ services:
 
   driver:
     build:
-      context: .
+      context: ..
       dockerfile: cmd/driver/Dockerfile
     container_name: driver
     depends_on:
       srlinux:
         condition: service_healthy
     volumes:
-      - ./configs/driver.yaml:/etc/gnmi-kafka/driver.yaml:ro
+      - ../configs/driver.yaml:/etc/gnmi-kafka/driver.yaml:ro
     networks: [demo-net]
     restart: unless-stopped
 
@@ -71,7 +71,7 @@ services:
 
   gateway:
     build:
-      context: .
+      context: ..
       dockerfile: cmd/gateway/Dockerfile
     container_name: gateway
     depends_on:
@@ -80,7 +80,7 @@ services:
       kafka:
         condition: service_healthy
     volumes:
-      - ./configs/gateway.yaml:/etc/gnmi-kafka/gateway.yaml:ro
+      - ../configs/gateway.yaml:/etc/gnmi-kafka/gateway.yaml:ro
     networks: [demo-net]
     restart: unless-stopped
 

@@ -3,3 +3,7 @@ dist/
 coverage.out
 *.log
 .DS_Store
+
+# AI tools
+.claude/
+openspec/
