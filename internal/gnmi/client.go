@@ -14,6 +14,7 @@ import (
 	"github.com/openconfig/gnmic/pkg/api"
 	"github.com/openconfig/gnmic/pkg/api/target"
 	"github.com/tbotnz/gnmi-kafka-producer/internal/config"
+	"github.com/tbotnz/gnmi-kafka-producer/internal/metrics"
 )
 
 // endpoint returns "host:port", respecting host strings that already contain a port.
@@ -70,6 +71,7 @@ func Dial(ctx context.Context, t config.Target, sec config.SecurityProfile, g co
 			lastErr = err
 			_ = tg.Close()
 		}
+		metrics.IncDialFailure(t.Name)
 		log.Printf("[%s] dial attempt %d to %s failed: %v", t.Name, attempt, addr, lastErr)
 		select {
 		case <-ctx.Done():
