@@ -69,11 +69,27 @@ The gateway is configured by a single file, [`configs/gateway.yaml`](./configs).
 ```yaml
 kafka:  { brokers: ["kafka:9092"], topic: gnmi.telemetry }
 gnmi:   { port: 9339, username: "", password: "",
-          skip_verify: true, encoding: json_ietf, sample_interval: 5s }
-paths:  [/interfaces/interface[name=*]/state/oper-status,
-         /interfaces/interface[name=*]/state/counters/in-octets, ...]
+          skip_verify: true, encoding: json_ietf }
+subscription_profiles:
+  interface-counters:
+    mode: SAMPLE
+    sample_interval: 5s
+    paths: [/interfaces/interface[name=*]/state/counters/in-octets, ...]
+  interface-status:
+    mode: ON_CHANGE
+    heartbeat_interval: 5m
+    paths: [/interfaces/interface[name=*]/state/oper-status, ...]
 hosts:  [192.168.100.1]
 ```
+
+Paths are grouped into named **subscription profiles**, each with its own
+collection mode: `SAMPLE` re-reads its paths every `sample_interval`; `ON_CHANGE`
+fires only on state transitions (plus an optional `heartbeat_interval` resend so
+quiet leaves are still confirmed alive). Every host subscribes to every profile
+over a single gNMI Subscribe stream. At startup the gateway rejects
+oversubscribed configs — the same path twice, or a parent container together
+with one of its own leaves (e.g. `.../state` plus `.../state/counters/in-octets`)
+— since those make the device stream the same data more than once.
 
 nl6 exposes the OpenConfig `interfaces` model (read-only) over gNMI on port 9339,
 with a self-signed cert (`skip_verify: true`) and no authentication.
@@ -81,10 +97,10 @@ with a self-signed cert (`skip_verify: true`) and no authentication.
 - **Add devices**: bump `-auto-count` on the `nl6` service in `e2e/compose.yml`
   and add the extra `192.168.100.x` addresses to `hosts:`. The gateway dials all
   hosts concurrently.
-- **Change paths or sample interval**: edit `configs/gateway.yaml`, then
-  `docker compose -f e2e/compose.yml restart gateway`. No rebuild. See
-  [nl6's gNMI reference](https://nl6.eu) for the full leaf list (ifindex,
-  admin/oper-status, last-change, and the complete `counters/*` set).
+- **Change paths, modes, or intervals**: edit the `subscription_profiles` in
+  `configs/gateway.yaml`, then `docker compose -f e2e/compose.yml restart gateway`.
+  No rebuild. See [nl6's gNMI reference](https://nl6.eu) for the full leaf list
+  (ifindex, admin/oper-status, last-change, and the complete `counters/*` set).
 - **Point at a real device**: give the `gateway` its own network instead of
   `network_mode: "service:nl6"`, put the device address in `hosts:`, and ensure
   the gateway container can route to it.
