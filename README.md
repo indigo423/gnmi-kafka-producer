@@ -11,13 +11,17 @@ flowchart LR
     NL6[(nl6 simulator)]
     K[(kafka)]
     UI[kafka-ui :8080]
+    EX[exporter]
+    P[(prometheus :9091)]
     GF[grafana :3000]
 
     gconf --> GW
     GW -- Subscribe --> NL6
     GW -- produce JSON --> K
     K --> UI
-    K -- Kafka datasource --> GF
+    K -- consume --> EX
+    EX -- scrape --> P
+    P -- Prometheus datasource --> GF
 ```
 
 ## Components
@@ -36,15 +40,22 @@ flowchart TB
         K["kafka<br/>apache/kafka:3.9.1<br/>single-node KRaft<br/>:9092 in-net, :29092 host"]
     end
 
+    subgraph metricsdb["metrics"]
+        EX["exporter<br/>cmd/exporter<br/>consume gnmi.telemetry, serve gauges :9108"]
+        P["prometheus<br/>prom/prometheus:v3.5.0<br/>scrapes exporter + gateway<br/>:9091 host"]
+    end
+
     subgraph ui["UI"]
         UI["kafka-ui<br/>ghcr.io/kafbat/kafka-ui:latest<br/>kafbat web UI<br/>:8080 host"]
-        GF["grafana<br/>grafana/grafana:13.1.0<br/>+ kafka-datasource plugin<br/>live dashboard :3000 host"]
+        GF["grafana<br/>grafana/grafana:13.1.0<br/>Prometheus datasource<br/>dashboard :3000 host"]
     end
 
     GW -- gNMI --> NL6
     GW -- produce --> K
     UI -- read --> K
-    GF -- stream (Kafka datasource) --> K
+    EX -- consume --> K
+    P -- scrape --> EX
+    GF -- query (Prometheus datasource) --> P
 ```
 
 ## Quickstart
@@ -54,6 +65,7 @@ make up                       # docker compose up -d --build
 make ps                       # watch services come healthy
 open http://localhost:8080    # kafbat: cluster "demo", topic "gnmi.telemetry"
 open http://localhost:3000    # grafana: "gNMI Telemetry (live)" dashboard (anonymous)
+open http://localhost:9091    # prometheus: gnmi_* (telemetry) and gateway_* (ops) series
 ```
 
 [nl6](https://nl6.eu) boots in seconds and emits self-animating telemetry
@@ -143,7 +155,8 @@ metrics at `http://localhost:9090/metrics`:
 
 Unset `metrics_port` and the gateway opens no listener at all. (The port is
 published on the `nl6` compose service because the gateway shares its network
-namespace.)
+namespace.) The in-stack Prometheus scrapes this endpoint too (job `gateway`),
+next to the telemetry from the exporter (job `telemetry`).
 
 ## Output format
 
@@ -173,13 +186,14 @@ The `target` field and the label fields (`role`, `region`, `vendor` above) come
 from the target's registry entry and are constant for all of a target's records,
 so the field set stays stable.
 
-The stable field set is what makes the live dashboard work: the Grafana Kafka
-datasource streams each message as a data frame, and Grafana's streaming buffer
-drops any field that is missing from the latest message's schema. Per-metric
-records (the previous shape) made the schema flip on every message and wiped the
-numeric columns. The plugin does **not** turn string fields into series labels;
-the dashboard splits per interface with a `partitionByValues` transformation on
-`device` + `interface` instead.
+The **exporter** (`cmd/exporter`) bridges this topic into Prometheus: it keeps
+the last record per Kafka key and serves every numeric field as a gauge named
+`gnmi_<field>` (e.g. `gnmi_in_octets_bps`, `gnmi_oper_status`), with the string
+fields — `device`, `interface`, `target`, and the free-form target labels — as
+Prometheus labels. Because each record already carries the full merged state,
+the exporter just replaces state per key; a leaf the gateway drops (delete,
+counter reset) disappears from the next scrape. The Grafana dashboard queries
+these series through the provisioned Prometheus datasource.
 
 - **Metric key** — the leaf name with `-`→`_` (e.g. `in_octets`), carrying the raw
   value as a JSON number.
@@ -194,8 +208,8 @@ the dashboard splits per interface with a `partitionByValues` transformation on
 
 > **Breaking change**: this replaces the earlier one-metric-per-message record
 > (and before that, the flat `{target, path, value}` record). Any consumer of the
-> old shapes must be updated. Only `kafka-ui` (schema-agnostic) and the Grafana
-> dashboard read this topic in the demo.
+> old shapes must be updated. Only `kafka-ui` (schema-agnostic) and the exporter
+> read this topic in the demo.
 
 ## Commands
 
@@ -215,18 +229,23 @@ make down                                  # tear down
 │   └── gateway.yaml          # gateway config
 ├── e2e/
 │   ├── compose.yml           # end-to-end demo stack
-│   └── grafana/              # provisioned datasource + live dashboard
+│   ├── grafana/              # provisioned datasource + dashboard
+│   └── prometheus/           # scrape config (exporter + gateway)
 ├── Makefile
 ├── README.md
 ├── go.mod / go.sum
 ├── cmd/
-│   └── gateway/              # subscribe loop, one goroutine per host
+│   ├── gateway/              # subscribe loop, one goroutine per host
+│   │   ├── Dockerfile
+│   │   └── main.go
+│   └── exporter/             # Kafka → Prometheus bridge (e2e stack only)
 │       ├── Dockerfile
 │       └── main.go
 └── internal/
     ├── config/
     │   ├── config.go         # shared field types + YAML loader
     │   └── gateway.go        # Gateway type, LoadGateway, validate
+    ├── exporter/exporter.go  # record state store + Prometheus collector
     ├── gnmi/
     │   ├── client.go         # dial-with-retry, SubscribeRequest builder
     │   └── flatten.go        # gNMI Notification to []Record, TypedValue cases
@@ -242,6 +261,7 @@ make down                                  # tear down
 - nl6's gNMI is read-only (Capabilities/Get/Subscribe; no Set) and serves TLS
   with a self-signed cert, so the gateway uses `skip_verify: true` and no
   credentials.
-- Kafka data lives in the container layer. `make down` wipes everything.
-- `kafka:3.9.1` is pinned. `nl6` and `kafka-ui` track `latest`. Change in
-  `e2e/compose.yml`.
+- Kafka and Prometheus data live in the container layer. `make down` wipes
+  everything.
+- `kafka:3.9.1` and `prometheus:v3.5.0` are pinned. `nl6` and `kafka-ui` track
+  `latest`. Change in `e2e/compose.yml`.
