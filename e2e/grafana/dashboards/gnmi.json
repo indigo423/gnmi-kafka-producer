@@ -2,11 +2,10 @@
   "annotations": { "list": [] },
   "editable": true,
   "graphTooltip": 1,
-  "liveNow": true,
-  "refresh": "",
+  "refresh": "5s",
   "schemaVersion": 39,
-  "tags": ["gnmi", "kafka", "telemetry"],
-  "time": { "from": "now-5m", "to": "now" },
+  "tags": ["gnmi", "prometheus", "telemetry"],
+  "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "title": "gNMI Telemetry (live)",
   "uid": "gnmi-telemetry",
@@ -17,8 +16,8 @@
       "title": "Interface throughput (bits/sec)",
       "type": "timeseries",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
-      "datasource": { "type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-gnmi" },
-      "description": "Streamed from gnmi.telemetry. Per-interface in/out rate computed at the source (in_octets_bps, out_octets_bps).",
+      "datasource": { "type": "prometheus", "uid": "prom-gnmi" },
+      "description": "Scraped from the gnmi.telemetry exporter. Per-interface in/out rate computed at the source (gnmi_in_octets_bps, gnmi_out_octets_bps).",
       "fieldConfig": {
         "defaults": {
           "unit": "bps",
@@ -33,23 +32,15 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-gnmi" },
-          "topicName": "gnmi.telemetry",
-          "partition": "all",
-          "autoOffsetReset": "latest",
-          "timestampMode": "message",
-          "messageFormat": "json",
-          "keyFormat": "string"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "partitionByValues",
-          "options": { "fields": ["device", "interface"], "keepFields": false, "naming": { "asLabels": true } }
+          "datasource": { "type": "prometheus", "uid": "prom-gnmi" },
+          "expr": "gnmi_in_octets_bps",
+          "legendFormat": "{{target}} {{interface}} in"
         },
         {
-          "id": "filterFieldsByName",
-          "options": { "include": { "pattern": "([Tt]ime|.*_bps)" } }
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prom-gnmi" },
+          "expr": "gnmi_out_octets_bps",
+          "legendFormat": "{{target}} {{interface}} out"
         }
       ]
     },
@@ -58,7 +49,7 @@
       "title": "Interface oper/admin status (1 = up)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 10 },
-      "datasource": { "type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-gnmi" },
+      "datasource": { "type": "prometheus", "uid": "prom-gnmi" },
       "description": "oper_status / admin_status mapped to 1 (UP) / 0 (other) at the source.",
       "fieldConfig": {
         "defaults": {
@@ -76,23 +67,15 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "hamedkarbasi93-kafka-datasource", "uid": "kafka-gnmi" },
-          "topicName": "gnmi.telemetry",
-          "partition": "all",
-          "autoOffsetReset": "latest",
-          "timestampMode": "message",
-          "messageFormat": "json",
-          "keyFormat": "string"
-        }
-      ],
-      "transformations": [
-        {
-          "id": "partitionByValues",
-          "options": { "fields": ["device", "interface"], "keepFields": false, "naming": { "asLabels": true } }
+          "datasource": { "type": "prometheus", "uid": "prom-gnmi" },
+          "expr": "gnmi_oper_status",
+          "legendFormat": "{{target}} {{interface}} oper"
         },
         {
-          "id": "filterFieldsByName",
-          "options": { "include": { "pattern": "([Tt]ime|.*_status)" } }
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prom-gnmi" },
+          "expr": "gnmi_admin_status",
+          "legendFormat": "{{target}} {{interface}} admin"
         }
       ]
     }
