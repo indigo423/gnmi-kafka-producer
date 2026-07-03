@@ -81,7 +81,7 @@ func TestParsePath(t *testing.T) {
 }
 
 func TestRate(t *testing.T) {
-	e := NewEnricher()
+	e := NewEnricher(nil)
 	base := time.Unix(1_700_000_000, 0).UTC()
 
 	// First sample: raw counter present, no rate yet.
@@ -119,7 +119,7 @@ func TestRate(t *testing.T) {
 }
 
 func TestStatusMapping(t *testing.T) {
-	e := NewEnricher()
+	e := NewEnricher(nil)
 	ts := time.Unix(1_700_000_000, 0).UTC()
 	// JSON_IETF enums may carry a YANG module prefix, as nl6 emits them.
 	cases := map[string]int{"UP": 1, "openconfig-interfaces:UP": 1, "DOWN": 0, "openconfig-interfaces:DOWN": 0, "TESTING": 0}
@@ -144,7 +144,7 @@ func TestStatusMapping(t *testing.T) {
 // every leaf seen for the interface, keeping the field set identical across
 // messages (the Grafana Kafka datasource drops fields absent from a message).
 func TestMergedState(t *testing.T) {
-	e := NewEnricher()
+	e := NewEnricher(nil)
 	base := time.Unix(1_700_000_000, 0).UTC()
 
 	e.FromNotification("dev1", counterNotif("1000", base))
@@ -188,7 +188,7 @@ func TestMergedState(t *testing.T) {
 }
 
 func TestStateEvictionOnDelete(t *testing.T) {
-	e := NewEnricher()
+	e := NewEnricher(nil)
 	base := time.Unix(1_700_000_000, 0).UTC()
 	key := "dev1|eth0|in-octets"
 
@@ -215,5 +215,25 @@ func TestStateEvictionOnDelete(t *testing.T) {
 	r := oneRecord(t, e.FromNotification("dev1", counterNotif("9000", base.Add(6*time.Second))))
 	if _, ok := r.Fields["in_octets_bps"]; ok {
 		t.Fatalf("post-eviction sample should have no _bps, got %v", r.Fields["in_octets_bps"])
+	}
+}
+
+func TestStaticFieldsOnEveryRecord(t *testing.T) {
+	e := NewEnricher(map[string]any{"target": "t1", "role": "leaf", "in_octets": "shadowed"})
+	base := time.Unix(1_700_000_000, 0).UTC()
+
+	r1 := oneRecord(t, e.FromNotification("dev1", counterNotif("1000", base)))
+	if r1.Fields["target"] != "t1" || r1.Fields["role"] != "leaf" {
+		t.Fatalf("static fields missing: %v", r1.Fields)
+	}
+	// A static field colliding with a metric name loses to the telemetry value.
+	if got, ok := r1.Fields["in_octets"].(json.Number); !ok || got != "1000" {
+		t.Fatalf("in_octets = %v (%T), want telemetry value 1000", r1.Fields["in_octets"], r1.Fields["in_octets"])
+	}
+
+	// Static fields stay constant on subsequent leaf-triggered records.
+	r2 := oneRecord(t, e.FromNotification("dev1", counterNotif("2000", base.Add(10*time.Second))))
+	if r2.Fields["target"] != "t1" || r2.Fields["role"] != "leaf" {
+		t.Fatalf("static fields not constant: %v", r2.Fields)
 	}
 }

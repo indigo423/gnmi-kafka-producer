@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -30,10 +31,11 @@ func (r Record) MarshalJSON() ([]byte, error) { return json.Marshal(r.Fields) }
 // Enricher turns gNMI Notifications into enriched Records, holding the per-series
 // state needed to compute counter rates and the per-interface merged state
 // emitted with every Record. It is NOT safe for concurrent use; the gateway
-// gives each host its own Enricher (one per runHost goroutine).
+// gives each target its own Enricher (one per runTarget goroutine).
 type Enricher struct {
-	last  map[string]counterSample
-	state map[string]map[string]any // device|interface → last-known metric values
+	last   map[string]counterSample
+	state  map[string]map[string]any // device|interface → last-known metric values
+	static map[string]any            // per-target constant fields (labels, target name)
 }
 
 type counterSample struct {
@@ -41,10 +43,14 @@ type counterSample struct {
 	ts    time.Time
 }
 
-func NewEnricher() *Enricher {
+// NewEnricher returns an Enricher that merges static (per-target constant
+// fields, e.g. labels and the target name) into every record. Static fields are
+// applied first, so telemetry values win any name collision.
+func NewEnricher(static map[string]any) *Enricher {
 	return &Enricher{
-		last:  make(map[string]counterSample),
-		state: make(map[string]map[string]any),
+		last:   make(map[string]counterSample),
+		state:  make(map[string]map[string]any),
+		static: static,
 	}
 }
 
@@ -127,10 +133,9 @@ func (e *Enricher) enrich(device, iface, leaf string, tv *gnmipb.TypedValue, ts 
 		}
 	}
 
-	fields := make(map[string]any, len(st)+3)
-	for k, v := range st {
-		fields[k] = v
-	}
+	fields := make(map[string]any, len(e.static)+len(st)+3)
+	maps.Copy(fields, e.static)
+	maps.Copy(fields, st)
 	fields["device"] = device
 	fields["timestamp"] = tsStr
 	if iface != "" {

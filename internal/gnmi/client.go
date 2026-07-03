@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -21,19 +22,32 @@ func endpoint(host string, defaultPort int) string {
 	return fmt.Sprintf("%s:%d", host, defaultPort)
 }
 
-// Dial creates a gnmic Target and opens the gRPC channel, retrying until ctx is cancelled.
-func Dial(ctx context.Context, host string, g config.GNMI) (*target.Target, error) {
+// Dial creates a gnmic Target for t using its security profile and opens the
+// gRPC channel, retrying until ctx is cancelled. Credentials are read from the
+// environment here (presence was verified at config load), so secrets never
+// live on the config structs.
+func Dial(ctx context.Context, t config.Target, sec config.SecurityProfile, g config.GNMI) (*target.Target, error) {
+	addr := endpoint(t.Address, g.Port)
 	opts := []api.TargetOption{
-		api.Name(host),
-		api.Address(endpoint(host, g.Port)),
-		api.Username(g.Username),
-		api.Password(g.Password),
+		api.Name(t.Name),
+		api.Address(addr),
 		api.Timeout(g.DialTimeout),
 	}
-	if g.Insecure {
+	if sec.UsernameEnv != "" {
+		opts = append(opts, api.Username(os.Getenv(sec.UsernameEnv)), api.Password(os.Getenv(sec.PasswordEnv)))
+	}
+	if sec.Insecure {
 		opts = append(opts, api.Insecure(true))
 	} else {
-		opts = append(opts, api.SkipVerify(g.SkipVerify))
+		if sec.SkipVerify {
+			opts = append(opts, api.SkipVerify(true))
+		}
+		if sec.CACert != "" {
+			opts = append(opts, api.TLSCA(sec.CACert))
+		}
+		if sec.ClientCert != "" {
+			opts = append(opts, api.TLSCert(sec.ClientCert), api.TLSKey(sec.ClientKey))
+		}
 	}
 
 	var lastErr error
@@ -54,7 +68,7 @@ func Dial(ctx context.Context, host string, g config.GNMI) (*target.Target, erro
 			lastErr = err
 			_ = tg.Close()
 		}
-		log.Printf("[%s] dial attempt %d failed: %v", host, attempt, lastErr)
+		log.Printf("[%s] dial attempt %d to %s failed: %v", t.Name, attempt, addr, lastErr)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -67,9 +81,9 @@ func Dial(ctx context.Context, host string, g config.GNMI) (*target.Target, erro
 // subscription entry carrying its profile's mode, sample interval, and heartbeat
 // interval. Requests are per profile because targets may reject a
 // SubscriptionList that mixes ON_CHANGE and SAMPLE modes (nl6 does). All of a
-// host's requests are subscribed on its one connection and fanned into one
-// response stream, so the host's single Enricher and the merged-record contract
-// are preserved.
+// target's requests are subscribed on its one connection and fanned into one
+// response stream, so the target's single Enricher and the merged-record
+// contract are preserved.
 func BuildSubscribeRequests(g config.GNMI, profiles map[string]config.SubscriptionProfile) (map[string]*gnmipb.SubscribeRequest, error) {
 	reqs := make(map[string]*gnmipb.SubscribeRequest, len(profiles))
 	for name, p := range profiles {

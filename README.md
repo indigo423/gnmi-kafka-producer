@@ -68,8 +68,9 @@ The gateway is configured by a single file, [`configs/gateway.yaml`](./configs).
 
 ```yaml
 kafka:  { brokers: ["kafka:9092"], topic: gnmi.telemetry }
-gnmi:   { port: 9339, username: "", password: "",
-          skip_verify: true, encoding: json_ietf }
+gnmi:   { port: 9339, encoding: json_ietf, dial_timeout: 10s }
+security_profiles:
+  nl6-tls-noauth: { skip_verify: true }
 subscription_profiles:
   interface-counters:
     mode: SAMPLE
@@ -79,31 +80,41 @@ subscription_profiles:
     mode: ON_CHANGE
     heartbeat_interval: 5m
     paths: [/interfaces/interface[name=*]/state/oper-status, ...]
-hosts:  [192.168.100.1]
+targets:
+  - name: nl6-dev-01
+    address: 192.168.100.1
+    security: nl6-tls-noauth
+    labels: { role: leaf, region: lab, vendor: nl6 }
+    subscriptions: [interface-counters, interface-status]
 ```
 
 Paths are grouped into named **subscription profiles**, each with its own
 collection mode: `SAMPLE` re-reads its paths every `sample_interval`; `ON_CHANGE`
 fires only on state transitions (plus an optional `heartbeat_interval` resend so
-quiet leaves are still confirmed alive). Every host subscribes to every profile
-over a single gNMI Subscribe stream. At startup the gateway rejects
-oversubscribed configs — the same path twice, or a parent container together
-with one of its own leaves (e.g. `.../state` plus `.../state/counters/in-octets`)
-— since those make the device stream the same data more than once.
+quiet leaves are still confirmed alive). Devices are declared in the **targets**
+registry: each target names a device, references a **security profile** for the
+gRPC channel, and binds the subscription profiles to collect; its `labels` ride
+on every record. At startup the gateway rejects oversubscribed targets — the
+same path twice, or a parent container together with one of its own leaves
+(e.g. `.../state` plus `.../state/counters/in-octets`) among one target's bound
+profiles — since those make the device stream the same data more than once.
 
 nl6 exposes the OpenConfig `interfaces` model (read-only) over gNMI on port 9339,
-with a self-signed cert (`skip_verify: true`) and no authentication.
+with a self-signed cert (`skip_verify: true`) and no authentication — that is the
+`nl6-tls-noauth` profile above.
 
 - **Add devices**: bump `-auto-count` on the `nl6` service in `e2e/compose.yml`
-  and add the extra `192.168.100.x` addresses to `hosts:`. The gateway dials all
-  hosts concurrently.
+  and add a `targets:` entry per extra `192.168.100.x` address. Targets are
+  dialed concurrently.
 - **Change paths, modes, or intervals**: edit the `subscription_profiles` in
   `configs/gateway.yaml`, then `docker compose -f e2e/compose.yml restart gateway`.
   No rebuild. See [nl6's gNMI reference](https://nl6.eu) for the full leaf list
   (ifindex, admin/oper-status, last-change, and the complete `counters/*` set).
 - **Point at a real device**: give the `gateway` its own network instead of
-  `network_mode: "service:nl6"`, put the device address in `hosts:`, and ensure
-  the gateway container can route to it.
+  `network_mode: "service:nl6"`, add a target with the device's address, and give
+  it a security profile — mTLS via `ca_cert`/`client_cert`/`client_key`, and
+  credentials via `username_env`/`password_env` (environment variable *names*;
+  the values come from the container environment, never the YAML).
 
 ## Output format
 
@@ -114,6 +125,10 @@ the leaf that triggered it — so the field set is identical across messages:
 ```json
 {
   "device":         "192.168.100.1",
+  "target":         "nl6-dev-01",
+  "role":           "leaf",
+  "region":         "lab",
+  "vendor":         "nl6",
   "interface":      "TenGigE0/0/0/0",
   "admin_status":   1,
   "oper_status":    1,
@@ -124,6 +139,10 @@ the leaf that triggered it — so the field set is identical across messages:
   "timestamp":      "2026-06-26T08:10:01.234567890Z"
 }
 ```
+
+The `target` field and the label fields (`role`, `region`, `vendor` above) come
+from the target's registry entry and are constant for all of a target's records,
+so the field set stays stable.
 
 The stable field set is what makes the live dashboard work: the Grafana Kafka
 datasource streams each message as a data frame, and Grafana's streaming buffer

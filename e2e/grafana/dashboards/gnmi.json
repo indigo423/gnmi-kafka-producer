@@ -49,7 +49,7 @@
         },
         {
           "id": "filterFieldsByName",
-          "options": { "include": { "pattern": "(?i)(time|.*_bps)" } }
+          "options": { "include": { "pattern": "([Tt]ime|.*_bps)" } }
         }
       ]
     },
@@ -92,7 +92,7 @@
         },
         {
           "id": "filterFieldsByName",
-          "options": { "include": { "pattern": "(?i)(time|.*_status)" } }
+          "options": { "include": { "pattern": "([Tt]ime|.*_status)" } }
         }
       ]
     }

@@ -21,12 +21,10 @@ type Kafka struct {
 	Topic   string   `yaml:"topic"`
 }
 
+// GNMI holds dial defaults shared by all targets. Authentication and transport
+// security live in per-target SecurityProfiles.
 type GNMI struct {
 	Port        int           `yaml:"port"`
-	Username    string        `yaml:"username"`
-	Password    string        `yaml:"password"`
-	SkipVerify  bool          `yaml:"skip_verify"`
-	Insecure    bool          `yaml:"insecure"`
 	Encoding    string        `yaml:"encoding"`
 	DialTimeout time.Duration `yaml:"dial_timeout"`
 }
@@ -41,6 +39,62 @@ func (g *GNMI) applyDefaults() {
 	if g.DialTimeout == 0 {
 		g.DialTimeout = 10 * time.Second
 	}
+}
+
+// SecurityProfile is one named block under security_profiles: the transport
+// security and credentials for the gRPC channel to a target. TLS with verified
+// certificates is the default; insecure (plaintext) and skip_verify are explicit
+// opt-outs. Credentials are referenced by environment variable name — the config
+// file never holds secret values. Presence is verified at load (fail fast); the
+// values are read from the environment at dial time, so secrets never sit on
+// the config struct.
+type SecurityProfile struct {
+	Insecure    bool   `yaml:"insecure"`
+	SkipVerify  bool   `yaml:"skip_verify"`
+	CACert      string `yaml:"ca_cert"`
+	ClientCert  string `yaml:"client_cert"`
+	ClientKey   string `yaml:"client_key"`
+	UsernameEnv string `yaml:"username_env"`
+	PasswordEnv string `yaml:"password_env"`
+}
+
+func (s SecurityProfile) validate(name string) error {
+	if s.Insecure && (s.SkipVerify || s.CACert != "" || s.ClientCert != "" || s.ClientKey != "") {
+		return fmt.Errorf("security_profiles.%s: insecure contradicts TLS fields (skip_verify, ca_cert, client_cert, client_key)", name)
+	}
+	if s.Insecure && s.UsernameEnv != "" {
+		return fmt.Errorf("security_profiles.%s: credentials over an insecure (plaintext) channel are not allowed", name)
+	}
+	if s.SkipVerify && s.CACert != "" {
+		return fmt.Errorf("security_profiles.%s: skip_verify and ca_cert are contradictory", name)
+	}
+	if (s.ClientCert == "") != (s.ClientKey == "") {
+		return fmt.Errorf("security_profiles.%s: client_cert and client_key must be set together", name)
+	}
+	if (s.UsernameEnv == "") != (s.PasswordEnv == "") {
+		return fmt.Errorf("security_profiles.%s: username_env and password_env must be set together", name)
+	}
+	for _, env := range []string{s.UsernameEnv, s.PasswordEnv} {
+		if env == "" {
+			continue
+		}
+		if v, ok := os.LookupEnv(env); !ok || v == "" {
+			return fmt.Errorf("security_profiles.%s: environment variable %s is unset or empty", name, env)
+		}
+	}
+	return nil
+}
+
+// Target is one entry in the targets: registry. Address may be a bare host
+// (port comes from gnmi.port) or host:port. Security references a
+// security_profiles entry; Subscriptions references subscription_profiles
+// entries. Labels are injected verbatim into every record for the target.
+type Target struct {
+	Name          string            `yaml:"name"`
+	Address       string            `yaml:"address"`
+	Security      string            `yaml:"security"`
+	Labels        map[string]string `yaml:"labels"`
+	Subscriptions []string          `yaml:"subscriptions"`
 }
 
 // SubscriptionProfile is one named block under subscription_profiles: a set of

@@ -32,33 +32,40 @@ func main() {
 	}
 	defer producer.Close(context.Background())
 
-	log.Printf("gateway starting: hosts=%v profiles=%d kafka=%v topic=%s",
-		cfg.Hosts, len(cfg.Profiles), cfg.Kafka.Brokers, cfg.Kafka.Topic)
+	log.Printf("gateway starting: targets=%d profiles=%d kafka=%v topic=%s",
+		len(cfg.Targets), len(cfg.Profiles), cfg.Kafka.Brokers, cfg.Kafka.Topic)
 
 	var wg sync.WaitGroup
-	for _, host := range cfg.Hosts {
+	for _, t := range cfg.Targets {
 		wg.Add(1)
-		go func(host string) {
+		go func(t config.Target) {
 			defer wg.Done()
-			runHost(ctx, host, cfg.GNMI, cfg.Profiles, producer)
-		}(host)
+			runTarget(ctx, t, cfg, producer)
+		}(t)
 	}
 	wg.Wait()
 	log.Println("gateway stopped")
 }
 
-func runHost(ctx context.Context, host string, g config.GNMI, profiles map[string]config.SubscriptionProfile, producer *kafka.Producer) {
-	log.Printf("[%s] connecting (profiles=%d)", host, len(profiles))
-	tg, err := gnmix.Dial(ctx, host, g)
+func runTarget(ctx context.Context, t config.Target, cfg *config.Gateway, producer *kafka.Producer) {
+	// References are validated at config load, so these lookups always hit.
+	sec := cfg.SecurityProfiles[t.Security]
+	profiles := make(map[string]config.SubscriptionProfile, len(t.Subscriptions))
+	for _, name := range t.Subscriptions {
+		profiles[name] = cfg.Profiles[name]
+	}
+
+	log.Printf("[%s] connecting to %s (profiles=%d)", t.Name, t.Address, len(profiles))
+	tg, err := gnmix.Dial(ctx, t, sec, cfg.GNMI)
 	if err != nil {
-		log.Printf("[%s] dial gave up: %v", host, err)
+		log.Printf("[%s] dial gave up: %v", t.Name, err)
 		return
 	}
 	defer func() { _ = tg.Close() }()
 
-	reqs, err := gnmix.BuildSubscribeRequests(g, profiles)
+	reqs, err := gnmix.BuildSubscribeRequests(cfg.GNMI, profiles)
 	if err != nil {
-		log.Printf("[%s] build subscribe: %v", host, err)
+		log.Printf("[%s] build subscribe: %v", t.Name, err)
 		return
 	}
 
@@ -69,17 +76,18 @@ func runHost(ctx context.Context, host string, g config.GNMI, profiles map[strin
 	}
 	rspCh, errCh := tg.ReadSubscriptions()
 
-	// Each host owns its Enricher, so rate state needs no locking.
-	enricher := gnmix.NewEnricher()
+	// Each target owns its Enricher, so rate state needs no locking. Labels and
+	// the target name ride on every record as static fields.
+	enricher := gnmix.NewEnricher(t.StaticFields())
 
-	log.Printf("[%s] subscriptions started (profiles=%d)", host, len(reqs))
+	log.Printf("[%s] subscriptions started (profiles=%d)", t.Name, len(reqs))
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case e := <-errCh:
 			if e != nil {
-				log.Printf("[%s] subscribe error: %v", host, e.Err)
+				log.Printf("[%s] subscribe error: %v", t.Name, e.Err)
 			}
 		case rsp, ok := <-rspCh:
 			if !ok {
@@ -89,10 +97,10 @@ func runHost(ctx context.Context, host string, g config.GNMI, profiles map[strin
 			if notif == nil {
 				continue
 			}
-			for _, rec := range enricher.FromNotification(host, notif) {
+			for _, rec := range enricher.FromNotification(t.Address, notif) {
 				body, err := json.Marshal(rec)
 				if err != nil {
-					log.Printf("[%s] marshal: %v", host, err)
+					log.Printf("[%s] marshal: %v", t.Name, err)
 					continue
 				}
 				producer.Send(ctx, []byte(rec.Key), body)
