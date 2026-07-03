@@ -45,6 +45,10 @@ func Dial(ctx context.Context, host string, g config.GNMI) (*target.Target, erro
 		if err != nil {
 			lastErr = err
 		} else if err := tg.CreateGNMIClient(ctx); err == nil {
+			// gnmic's Subscribe retries a failed stream after RetryTimer; the
+			// api package exposes no option for it and the zero default
+			// busy-loops ("retrying in 0s") on a persistent rejection.
+			tg.Config.RetryTimer = 5 * time.Second
 			return tg, nil
 		} else {
 			lastErr = err
@@ -59,29 +63,40 @@ func Dial(ctx context.Context, host string, g config.GNMI) (*target.Target, erro
 	}
 }
 
-// BuildSubscribeRequest builds a STREAM SAMPLE SubscribeRequest covering every path,
-// all sharing g.SampleInterval and g.Encoding.
-func BuildSubscribeRequest(g config.GNMI, paths []string) (*gnmipb.SubscribeRequest, error) {
-	interval := g.SampleInterval
-	if interval == 0 {
-		interval = 5 * time.Second
+// BuildSubscribeRequests builds one STREAM SubscribeRequest per profile, each
+// subscription entry carrying its profile's mode, sample interval, and heartbeat
+// interval. Requests are per profile because targets may reject a
+// SubscriptionList that mixes ON_CHANGE and SAMPLE modes (nl6 does). All of a
+// host's requests are subscribed on its one connection and fanned into one
+// response stream, so the host's single Enricher and the merged-record contract
+// are preserved.
+func BuildSubscribeRequests(g config.GNMI, profiles map[string]config.SubscriptionProfile) (map[string]*gnmipb.SubscribeRequest, error) {
+	reqs := make(map[string]*gnmipb.SubscribeRequest, len(profiles))
+	for name, p := range profiles {
+		reqOpts := []api.GNMIOption{
+			api.Encoding(g.Encoding),
+			api.SubscriptionListMode("stream"),
+		}
+		for _, path := range p.Paths {
+			subOpts := []api.GNMIOption{
+				api.Path(path),
+				api.SubscriptionMode(p.Mode),
+			}
+			switch p.Mode {
+			case "SAMPLE":
+				subOpts = append(subOpts, api.SampleInterval(p.SampleInterval))
+			case "ON_CHANGE":
+				if p.HeartbeatInterval > 0 {
+					subOpts = append(subOpts, api.HeartbeatInterval(p.HeartbeatInterval))
+				}
+			}
+			reqOpts = append(reqOpts, api.Subscription(subOpts...))
+		}
+		req, err := api.NewSubscribeRequest(reqOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("build subscribe req for profile %s: %w", name, err)
+		}
+		reqs[name] = req
 	}
-	subs := make([]api.GNMIOption, 0, len(paths))
-	for _, p := range paths {
-		subs = append(subs, api.Subscription(
-			api.Path(p),
-			api.SubscriptionMode("sample"),
-			api.SampleInterval(interval),
-		))
-	}
-	reqOpts := []api.GNMIOption{
-		api.Encoding(g.Encoding),
-		api.SubscriptionListMode("stream"),
-	}
-	reqOpts = append(reqOpts, subs...)
-	req, err := api.NewSubscribeRequest(reqOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("build subscribe req: %w", err)
-	}
-	return req, nil
+	return reqs, nil
 }
