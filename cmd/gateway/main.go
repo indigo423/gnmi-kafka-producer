@@ -34,23 +34,23 @@ func main() {
 	}
 	defer producer.Close(context.Background())
 
-	log.Printf("gateway starting: hosts=%v paths=%d kafka=%v topic=%s",
-		cfg.Hosts, len(cfg.Paths), cfg.Kafka.Brokers, cfg.Kafka.Topic)
+	log.Printf("gateway starting: hosts=%v profiles=%d kafka=%v topic=%s",
+		cfg.Hosts, len(cfg.Profiles), cfg.Kafka.Brokers, cfg.Kafka.Topic)
 
 	var wg sync.WaitGroup
 	for _, host := range cfg.Hosts {
 		wg.Add(1)
 		go func(host string) {
 			defer wg.Done()
-			runHost(ctx, host, cfg.GNMI, cfg.Paths, producer)
+			runHost(ctx, host, cfg.GNMI, cfg.Profiles, producer)
 		}(host)
 	}
 	wg.Wait()
 	log.Println("gateway stopped")
 }
 
-func runHost(ctx context.Context, host string, g config.GNMI, paths []string, producer *kafka.Producer) {
-	log.Printf("[%s] connecting (paths=%d)", host, len(paths))
+func runHost(ctx context.Context, host string, g config.GNMI, profiles map[string]config.SubscriptionProfile, producer *kafka.Producer) {
+	log.Printf("[%s] connecting (profiles=%d)", host, len(profiles))
 	tg, err := gnmix.Dial(ctx, host, g)
 	if err != nil {
 		log.Printf("[%s] dial gave up: %v", host, err)
@@ -58,19 +58,23 @@ func runHost(ctx context.Context, host string, g config.GNMI, paths []string, pr
 	}
 	defer func() { _ = tg.Close() }()
 
-	req, err := gnmix.BuildSubscribeRequest(g, paths)
+	reqs, err := gnmix.BuildSubscribeRequests(g, profiles)
 	if err != nil {
 		log.Printf("[%s] build subscribe: %v", host, err)
 		return
 	}
 
-	go tg.Subscribe(ctx, req, "main")
+	// One Subscribe RPC per profile (targets may reject mixed-mode lists);
+	// ReadSubscriptions fans them all into one response stream.
+	for name, req := range reqs {
+		go tg.Subscribe(ctx, req, name)
+	}
 	rspCh, errCh := tg.ReadSubscriptions()
 
 	// Each host owns its Enricher, so rate state needs no locking.
 	enricher := gnmix.NewEnricher()
 
-	log.Printf("[%s] subscribed", host)
+	log.Printf("[%s] subscriptions started (profiles=%d)", host, len(reqs))
 	for {
 		select {
 		case <-ctx.Done():

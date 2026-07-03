@@ -8,6 +8,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"time"
@@ -23,14 +24,13 @@ type Kafka struct {
 }
 
 type GNMI struct {
-	Port           int           `yaml:"port"`
-	Username       string        `yaml:"username"`
-	Password       string        `yaml:"password"`
-	SkipVerify     bool          `yaml:"skip_verify"`
-	Insecure       bool          `yaml:"insecure"`
-	Encoding       string        `yaml:"encoding"`
-	DialTimeout    time.Duration `yaml:"dial_timeout"`
-	SampleInterval time.Duration `yaml:"sample_interval"`
+	Port        int           `yaml:"port"`
+	Username    string        `yaml:"username"`
+	Password    string        `yaml:"password"`
+	SkipVerify  bool          `yaml:"skip_verify"`
+	Insecure    bool          `yaml:"insecure"`
+	Encoding    string        `yaml:"encoding"`
+	DialTimeout time.Duration `yaml:"dial_timeout"`
 }
 
 func (g *GNMI) applyDefaults() {
@@ -43,18 +43,58 @@ func (g *GNMI) applyDefaults() {
 	if g.DialTimeout == 0 {
 		g.DialTimeout = 10 * time.Second
 	}
-	if g.SampleInterval == 0 {
-		g.SampleInterval = 5 * time.Second
-	}
 }
 
-// loadYAML reads and unmarshals a file into v.
+// SubscriptionProfile is one named block under subscription_profiles: a set of
+// gNMI paths sharing a collection mode. SAMPLE profiles require sample_interval;
+// ON_CHANGE profiles may set heartbeat_interval to force a resend when a leaf
+// stays quiet. Fields that are meaningless for the mode are rejected, not
+// ignored, so typos surface at load time.
+type SubscriptionProfile struct {
+	Mode              string        `yaml:"mode"`
+	SampleInterval    time.Duration `yaml:"sample_interval"`
+	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
+	Paths             []string      `yaml:"paths"`
+}
+
+func (p SubscriptionProfile) validate(name string) error {
+	switch p.Mode {
+	case "SAMPLE":
+		if p.SampleInterval <= 0 {
+			return fmt.Errorf("subscription_profiles.%s: sample_interval is required for mode SAMPLE", name)
+		}
+		if p.HeartbeatInterval != 0 {
+			return fmt.Errorf("subscription_profiles.%s: heartbeat_interval is not allowed for mode SAMPLE", name)
+		}
+	case "ON_CHANGE":
+		if p.SampleInterval != 0 {
+			return fmt.Errorf("subscription_profiles.%s: sample_interval is not allowed for mode ON_CHANGE", name)
+		}
+		if p.HeartbeatInterval < 0 {
+			return fmt.Errorf("subscription_profiles.%s: heartbeat_interval must not be negative", name)
+		}
+	case "":
+		return fmt.Errorf("subscription_profiles.%s: mode is required (SAMPLE or ON_CHANGE)", name)
+	default:
+		return fmt.Errorf("subscription_profiles.%s: unknown mode %q (want SAMPLE or ON_CHANGE)", name, p.Mode)
+	}
+	if len(p.Paths) == 0 {
+		return fmt.Errorf("subscription_profiles.%s: paths must have at least one entry", name)
+	}
+	return nil
+}
+
+// loadYAML reads and unmarshals a file into v. Decoding is strict: unknown
+// keys are an error, so typos and legacy config fields surface at load time
+// instead of being silently ignored.
 func loadYAML(path string, v any) error {
 	data, err := os.ReadFile(path) // #nosec G304 -- path is an operator-supplied -config flag, not untrusted input
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	if err := yaml.Unmarshal(data, v); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
 	return nil

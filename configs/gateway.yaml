@@ -5,7 +5,7 @@ kafka:
   brokers: ["kafka:9092"]
   topic: gnmi.telemetry
 
-# Shared gNMI dial + subscription settings, applied to every host.
+# Shared gNMI dial settings, applied to every host.
 # nl6 requires no authentication and serves gNMI over TLS on port 9339.
 gnmi:
   port: 9339
@@ -15,17 +15,28 @@ gnmi:
   insecure: false          # set true to use plaintext gNMI instead of TLS
   encoding: json_ietf
   dial_timeout: 10s
-  sample_interval: 5s      # applied to every path in `paths:` below
 
-# gNMI paths the gateway subscribes to on every host. nl6 exposes the OpenConfig
-# interfaces model (read-only). Fuller leaf list at https://nl6.eu (gNMI reference):
-# ifindex, last-change, and the full counters/* set (unicast/multicast/broadcast
-# pkts, discards, errors) are also available.
-paths:
-  - /interfaces/interface[name=*]/state/admin-status
-  - /interfaces/interface[name=*]/state/oper-status
-  - /interfaces/interface[name=*]/state/counters/in-octets
-  - /interfaces/interface[name=*]/state/counters/out-octets
+# Named subscription profiles. Every host subscribes to every profile over one
+# gNMI Subscribe stream; each profile's paths use its mode and intervals.
+# SAMPLE requires sample_interval; ON_CHANGE fires on state transitions, with
+# heartbeat_interval forcing a resend when a leaf stays quiet. Overlapping or
+# duplicate paths across profiles are rejected at startup (oversubscription).
+# nl6 exposes the OpenConfig interfaces model (read-only). Fuller leaf list at
+# https://nl6.eu (gNMI reference): ifindex, last-change, and the full counters/*
+# set (unicast/multicast/broadcast pkts, discards, errors) are also available.
+subscription_profiles:
+  interface-counters:
+    mode: SAMPLE
+    sample_interval: 5s
+    paths:
+      - /interfaces/interface[name=*]/state/counters/in-octets
+      - /interfaces/interface[name=*]/state/counters/out-octets
+  interface-status:
+    mode: ON_CHANGE
+    heartbeat_interval: 5m
+    paths:
+      - /interfaces/interface[name=*]/state/admin-status
+      - /interfaces/interface[name=*]/state/oper-status
 
 # Hosts to poll. Address only — port comes from gnmi.port above (override
 # inline by writing "host:port"). Hosts are dialed concurrently. These are nl6's
