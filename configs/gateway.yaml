@@ -5,22 +5,33 @@ kafka:
   brokers: ["kafka:9092"]
   topic: gnmi.telemetry
 
-# Shared gNMI dial settings, applied to every host.
-# nl6 requires no authentication and serves gNMI over TLS on port 9339.
+# Shared gNMI dial defaults. Authentication and transport security live in
+# security_profiles below, referenced per target.
 gnmi:
-  port: 9339
-  username: ""             # nl6 has no auth
-  password: ""
-  skip_verify: true        # TLS with no cert verification (nl6 uses a self-signed cert)
-  insecure: false          # set true to use plaintext gNMI instead of TLS
+  port: 9339               # default port for target addresses without one
   encoding: json_ietf
   dial_timeout: 10s
 
-# Named subscription profiles. Every host subscribes to every profile over one
-# gNMI Subscribe stream; each profile's paths use its mode and intervals.
-# SAMPLE requires sample_interval; ON_CHANGE fires on state transitions, with
-# heartbeat_interval forcing a resend when a leaf stays quiet. Overlapping or
-# duplicate paths across profiles are rejected at startup (oversubscription).
+# Named connection-security profiles. TLS with verified certificates is the
+# default; skip_verify/insecure are explicit opt-outs. Credentials are
+# referenced by environment variable name (username_env/password_env) — never
+# stored in this file. nl6 serves TLS with a self-signed cert and no auth.
+security_profiles:
+  nl6-tls-noauth:
+    skip_verify: true
+  # core-mtls:                             # example: production mTLS profile
+  #   ca_cert: /etc/gateway/certs/ca.crt
+  #   client_cert: /etc/gateway/certs/client.crt
+  #   client_key: /etc/gateway/certs/client.key
+  #   username_env: CORE_SWITCH_USER
+  #   password_env: CORE_SWITCH_PASS
+
+# Named subscription profiles. Each target subscribes to the profiles listed in
+# its subscriptions: binding, over one gNMI connection (one Subscribe RPC per
+# profile). SAMPLE requires sample_interval; ON_CHANGE fires on state
+# transitions, with heartbeat_interval forcing a resend when a leaf stays
+# quiet. Overlapping or duplicate paths across one target's bound profiles are
+# rejected at startup (oversubscription).
 # nl6 exposes the OpenConfig interfaces model (read-only). Fuller leaf list at
 # https://nl6.eu (gNMI reference): ifindex, last-change, and the full counters/*
 # set (unicast/multicast/broadcast pkts, discards, errors) are also available.
@@ -38,11 +49,26 @@ subscription_profiles:
       - /interfaces/interface[name=*]/state/admin-status
       - /interfaces/interface[name=*]/state/oper-status
 
-# Hosts to poll. Address only — port comes from gnmi.port above (override
-# inline by writing "host:port"). Hosts are dialed concurrently. These are nl6's
-# auto-created per-device TUN IPs, reachable because the gateway shares nl6's
-# network namespace (see e2e/compose.yml).
-hosts:
-  - 192.168.100.1
-  # - 192.168.100.2
-  # - 192.168.100.3
+# Target registry. Each target names a device, its address (port from
+# gnmi.port unless written as "host:port"), a security profile, and the
+# subscription profiles to collect. Labels are free-form key/values injected
+# into every record for the target ("device", "interface", "timestamp", and
+# "target" are reserved). Targets are dialed concurrently. The addresses are
+# nl6's auto-created per-device TUN IPs, reachable because the gateway shares
+# nl6's network namespace (see e2e/compose.yml).
+targets:
+  - name: nl6-dev-01
+    address: 192.168.100.1
+    security: nl6-tls-noauth
+    labels:
+      role: leaf
+      region: lab
+      vendor: nl6
+    subscriptions:
+      - interface-counters
+      - interface-status
+  # - name: nl6-dev-02
+  #   address: 192.168.100.2
+  #   security: nl6-tls-noauth
+  #   labels: {role: leaf, region: lab, vendor: nl6}
+  #   subscriptions: [interface-counters, interface-status]
