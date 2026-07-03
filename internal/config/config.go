@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -16,9 +17,84 @@ import (
 
 // Shared field types.
 
+// Kafka configures the producer's connection to the brokers. Everything beyond
+// brokers/topic is optional and additive: with no other fields set the producer
+// connects plaintext without authentication, as it always has. SASL credentials
+// follow the same env-var indirection as gNMI security profiles: names in YAML,
+// presence verified at load, values read when the producer is built.
 type Kafka struct {
-	Brokers []string `yaml:"brokers"`
-	Topic   string   `yaml:"topic"`
+	Brokers       []string `yaml:"brokers"`
+	Topic         string   `yaml:"topic"`
+	ClientID      string   `yaml:"client_id"`
+	Compression   string   `yaml:"compression"`
+	TLS           bool     `yaml:"tls"`
+	TLSSkipVerify bool     `yaml:"tls_skip_verify"`
+	SASLMechanism string   `yaml:"sasl_mechanism"`
+	UsernameEnv   string   `yaml:"username_env"`
+	PasswordEnv   string   `yaml:"password_env"`
+}
+
+// KafkaCompressions and KafkaSASLMechanisms are the allowed enum values
+// (matched case-insensitively). The kafka package maps the same sets onto
+// franz-go options; a test there pins the two together so they cannot drift.
+var KafkaCompressions = map[string]bool{
+	"none": true, "gzip": true, "snappy": true, "lz4": true, "zstd": true,
+}
+
+var KafkaSASLMechanisms = map[string]bool{
+	"PLAIN": true, "SCRAM-SHA-256": true, "SCRAM-SHA-512": true,
+}
+
+func (k Kafka) validate() error {
+	if len(k.Brokers) == 0 {
+		return fmt.Errorf("kafka.brokers is required")
+	}
+	if k.Topic == "" {
+		return fmt.Errorf("kafka.topic is required")
+	}
+	if k.Compression != "" && !KafkaCompressions[strings.ToLower(k.Compression)] {
+		return fmt.Errorf("kafka.compression: unknown value %q (want none, gzip, snappy, lz4 or zstd)", k.Compression)
+	}
+	if k.TLSSkipVerify && !k.TLS {
+		return fmt.Errorf("kafka.tls_skip_verify requires kafka.tls: true")
+	}
+	if (k.UsernameEnv == "") != (k.PasswordEnv == "") {
+		return fmt.Errorf("kafka: username_env and password_env must be set together")
+	}
+	if k.SASLMechanism == "" {
+		if k.UsernameEnv != "" {
+			return fmt.Errorf("kafka: username_env/password_env require sasl_mechanism")
+		}
+		return nil
+	}
+	if !KafkaSASLMechanisms[strings.ToUpper(k.SASLMechanism)] {
+		return fmt.Errorf("kafka.sasl_mechanism: unknown value %q (want PLAIN, SCRAM-SHA-256 or SCRAM-SHA-512)", k.SASLMechanism)
+	}
+	if k.UsernameEnv == "" {
+		return fmt.Errorf("kafka.sasl_mechanism requires username_env and password_env")
+	}
+	if !k.TLS {
+		return fmt.Errorf("kafka.sasl_mechanism requires kafka.tls: true (credentials over plaintext are not allowed)")
+	}
+	return envCredentialPair("kafka", k.UsernameEnv, k.PasswordEnv)
+}
+
+// envCredentialPair enforces the shared credential rules: set both variable
+// names or neither, and any referenced variable must be present and non-empty
+// at load (fail fast; values are read at use time).
+func envCredentialPair(scope, userEnv, passEnv string) error {
+	if (userEnv == "") != (passEnv == "") {
+		return fmt.Errorf("%s: username_env and password_env must be set together", scope)
+	}
+	if userEnv == "" {
+		return nil
+	}
+	for _, env := range []string{userEnv, passEnv} {
+		if v, ok := os.LookupEnv(env); !ok || v == "" {
+			return fmt.Errorf("%s: environment variable %s is unset or empty", scope, env)
+		}
+	}
+	return nil
 }
 
 // GNMI holds dial defaults shared by all targets. Authentication and transport
@@ -71,18 +147,7 @@ func (s SecurityProfile) validate(name string) error {
 	if (s.ClientCert == "") != (s.ClientKey == "") {
 		return fmt.Errorf("security_profiles.%s: client_cert and client_key must be set together", name)
 	}
-	if (s.UsernameEnv == "") != (s.PasswordEnv == "") {
-		return fmt.Errorf("security_profiles.%s: username_env and password_env must be set together", name)
-	}
-	for _, env := range []string{s.UsernameEnv, s.PasswordEnv} {
-		if env == "" {
-			continue
-		}
-		if v, ok := os.LookupEnv(env); !ok || v == "" {
-			return fmt.Errorf("security_profiles.%s: environment variable %s is unset or empty", name, env)
-		}
-	}
-	return nil
+	return envCredentialPair("security_profiles."+name, s.UsernameEnv, s.PasswordEnv)
 }
 
 // Target is one entry in the targets: registry. Address may be a bare host

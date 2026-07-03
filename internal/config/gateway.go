@@ -12,6 +12,7 @@ import (
 type Gateway struct {
 	Kafka            Kafka                          `yaml:"kafka"`
 	GNMI             GNMI                           `yaml:"gnmi"`
+	MetricsPort      int                            `yaml:"metrics_port"` // 0 = no metrics listener
 	SecurityProfiles map[string]SecurityProfile     `yaml:"security_profiles"`
 	Profiles         map[string]SubscriptionProfile `yaml:"subscription_profiles"`
 	Targets          []Target                       `yaml:"targets"`
@@ -48,11 +49,11 @@ func LoadGateway(path string) (*Gateway, error) {
 }
 
 func (c *Gateway) validate() error {
-	if len(c.Kafka.Brokers) == 0 {
-		return fmt.Errorf("kafka.brokers is required")
+	if err := c.Kafka.validate(); err != nil {
+		return err
 	}
-	if c.Kafka.Topic == "" {
-		return fmt.Errorf("kafka.topic is required")
+	if c.MetricsPort < 0 || c.MetricsPort > 65535 {
+		return fmt.Errorf("metrics_port must be a port number (got %d)", c.MetricsPort)
 	}
 	if len(c.Targets) == 0 {
 		return fmt.Errorf("targets must have at least one entry")
