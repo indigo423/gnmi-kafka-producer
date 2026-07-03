@@ -28,23 +28,25 @@ func main() {
 	brokers := flag.String("brokers", "kafka:9092", "comma-separated Kafka bootstrap brokers")
 	topic := flag.String("topic", "gnmi.telemetry", "telemetry topic to consume")
 	listen := flag.String("listen", ":9108", "address to serve Prometheus metrics on")
+	stale := flag.Duration("stale", 15*time.Minute, "stop exporting a series once no record has arrived for it in this long")
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	store := exporter.NewStore()
+	store := exporter.NewStore(*stale)
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(store)
 
-	// Replaying the topic from the start warms the state map after a restart;
-	// records carry the full merged interface state, so replay converges on the
-	// latest values (per-partition order) with no special casing.
+	// Start at the end of the topic: every record carries the full merged
+	// interface state, so the state map repopulates within one sample interval
+	// — replaying history would only burn CPU on superseded records and
+	// resurrect series for devices that have since been decommissioned.
 	client, err := kgo.NewClient(
 		kgo.SeedBrokers(strings.Split(*brokers, ",")...),
 		kgo.ClientID("gnmi-prom-exporter"),
 		kgo.ConsumeTopics(*topic),
-		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
 	)
 	if err != nil {
 		log.Fatalf("kafka: %v", err)

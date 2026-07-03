@@ -2,12 +2,6 @@
 # Provisions the Prometheus datasource so the dashboard works on first start.
 apiVersion: 1
 
-# Drop the Kafka datasource left behind by pre-Prometheus versions of this
-# stack (harmless when absent).
-deleteDatasources:
-  - name: Kafka
-    orgId: 1
-
 datasources:
   - name: Prometheus
     uid: prom-gnmi
