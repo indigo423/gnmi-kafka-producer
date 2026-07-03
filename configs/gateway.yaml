@@ -79,8 +79,24 @@ targets:
     subscriptions:
       - interface-counters
       - interface-status
-  # - name: nl6-dev-02
-  #   address: 192.168.100.2
-  #   security: nl6-tls-noauth
-  #   labels: {role: leaf, region: lab, vendor: nl6}
-  #   subscriptions: [interface-counters, interface-status]
+  - name: nl6-dev-02
+    address: 192.168.100.2
+    security: nl6-tls-noauth
+    labels:
+      role: leaf
+      region: lab
+      vendor: nl6
+    subscriptions:
+      - interface-counters
+      - interface-status
+  - name: nl6-dev-03
+    address: 192.168.100.3
+    security: nl6-tls-noauth
+    labels: 
+      role: leaf
+      region: lab
+      vendor: nl6
+    subscriptions:
+      - interface-counters
+      - interface-status
+
