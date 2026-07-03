@@ -192,8 +192,11 @@ the last record per Kafka key and serves every numeric field as a gauge named
 fields — `device`, `interface`, `target`, and the free-form target labels — as
 Prometheus labels. Because each record already carries the full merged state,
 the exporter just replaces state per key; a leaf the gateway drops (delete,
-counter reset) disappears from the next scrape. The Grafana dashboard queries
-these series through the provisioned Prometheus datasource.
+counter reset) disappears from the next scrape, a series that stops arriving
+entirely (decommissioned device) stops being exported after `-stale` (15m
+default), and a restarted exporter repopulates from the live stream within one
+sample interval. The Grafana dashboard queries these series through the
+provisioned Prometheus datasource.
 
 - **Metric key** — the leaf name with `-`→`_` (e.g. `in_octets`), carrying the raw
   value as a JSON number.

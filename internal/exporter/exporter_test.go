@@ -5,9 +5,12 @@ package exporter
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+const noStale = time.Hour
 
 const record = `{
   "device": "192.168.100.1",
@@ -21,7 +24,7 @@ const record = `{
 }`
 
 func TestUpdateCollect(t *testing.T) {
-	s := NewStore()
+	s := NewStore(noStale)
 	s.Update([]byte("192.168.100.1|eth0"), []byte(record))
 
 	want := `
@@ -47,7 +50,7 @@ exporter_decode_errors_total 0
 }
 
 func TestUpdateReplacesState(t *testing.T) {
-	s := NewStore()
+	s := NewStore(noStale)
 	s.Update([]byte("k"), []byte(`{"interface":"eth0","in_octets":1,"in_octets_bps":8}`))
 	// Counter reset: the gateway drops _bps from the merged state; replacing
 	// (not merging) must drop the stale gauge too.
@@ -64,8 +67,34 @@ gnmi_in_octets{interface="eth0"} 2
 	}
 }
 
+func TestReservedLabelSkipped(t *testing.T) {
+	s := NewStore(noStale)
+	// "--zone" sanitizes to "__zone", which Prometheus reserves; keeping it
+	// would make MustNewConstMetric panic the scrape.
+	s.Update([]byte("k"), []byte(`{"interface":"eth0","--zone":"a","in_octets":1}`))
+
+	want := `
+# HELP gnmi_in_octets Last-known value of the in_octets record field.
+# TYPE gnmi_in_octets gauge
+gnmi_in_octets{interface="eth0"} 1
+`
+	if err := testutil.CollectAndCompare(s, strings.NewReader(want), "gnmi_in_octets"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStaleSeriesSkipped(t *testing.T) {
+	s := NewStore(time.Nanosecond)
+	s.Update([]byte("k"), []byte(`{"interface":"eth0","in_octets":1}`))
+	time.Sleep(time.Millisecond)
+
+	if got := testutil.CollectAndCount(s, "gnmi_in_octets"); got != 0 {
+		t.Fatalf("stale series still exported: %d families", got)
+	}
+}
+
 func TestDecodeError(t *testing.T) {
-	s := NewStore()
+	s := NewStore(noStale)
 	s.Update([]byte("k"), []byte(`not json`))
 
 	if got := testutil.CollectAndCount(s, "exporter_decode_errors_total"); got != 1 {

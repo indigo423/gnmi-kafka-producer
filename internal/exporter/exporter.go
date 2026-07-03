@@ -9,11 +9,11 @@
 package exporter
 
 import (
-	"bytes"
 	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -21,6 +21,8 @@ import (
 // Store is the Kafka-side write model and the Prometheus Collector in one. It
 // is safe for concurrent use (one consumer goroutine writing, scrapes reading).
 type Store struct {
+	staleAfter time.Duration
+
 	mu     sync.RWMutex
 	series map[string]series // Kafka key (device|interface) → last state
 
@@ -29,13 +31,19 @@ type Store struct {
 }
 
 type series struct {
-	labels map[string]string
-	values map[string]float64
+	labels  map[string]string
+	values  map[string]float64
+	updated time.Time
 }
 
-func NewStore() *Store {
+// NewStore returns a Store whose series stop being exported once no record has
+// arrived for them in staleAfter — a decommissioned device or interface would
+// otherwise be served (and rescraped as fresh) forever, since gNMI deletes
+// produce no record.
+func NewStore(staleAfter time.Duration) *Store {
 	return &Store{
-		series: make(map[string]series),
+		staleAfter: staleAfter,
+		series:     make(map[string]series),
 		records: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "exporter_records_consumed_total",
 			Help: "Records consumed from the telemetry topic.",
@@ -51,28 +59,33 @@ func NewStore() *Store {
 // The gateway emits the full merged interface state with every record, so
 // replacing (not merging) tracks leaf deletes for free.
 func (s *Store) Update(key, body []byte) {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
 	var fields map[string]any
-	if err := dec.Decode(&fields); err != nil {
+	if err := json.Unmarshal(body, &fields); err != nil {
 		s.errors.Inc()
 		return
 	}
 
-	sr := series{labels: make(map[string]string), values: make(map[string]float64)}
+	sr := series{
+		labels:  make(map[string]string),
+		values:  make(map[string]float64),
+		updated: time.Now(),
+	}
 	for k, v := range fields {
 		if k == "timestamp" { // scrape time is the sample time
 			continue
 		}
 		switch v := v.(type) {
-		case json.Number:
-			f, err := v.Float64()
-			if err != nil {
+		case float64:
+			sr.values[sanitize(k)] = v
+		case string:
+			name := sanitize(k)
+			if strings.HasPrefix(name, "__") {
+				// Reserved by Prometheus; NewDesc would reject the label and
+				// MustNewConstMetric would panic the scrape. (Metric names are
+				// safe: they get the gnmi_ prefix.)
 				continue
 			}
-			sr.values[sanitize(k)] = f
-		case string:
-			sr.labels[sanitize(k)] = v
+			sr.labels[name] = v
 		}
 		// Anything else (bool, array, object) has no metric mapping; skip.
 	}
@@ -91,9 +104,15 @@ func (s *Store) Collect(ch chan<- prometheus.Metric) {
 	s.records.Collect(ch)
 	s.errors.Collect(ch)
 
+	cutoff := time.Now().Add(-s.staleAfter)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, sr := range s.series {
+		if sr.updated.Before(cutoff) {
+			// Skip, don't serve: no eviction needed, the map is bounded by
+			// inventory churn over the process lifetime.
+			continue
+		}
 		keys := make([]string, 0, len(sr.labels))
 		for k := range sr.labels {
 			keys = append(keys, k)
