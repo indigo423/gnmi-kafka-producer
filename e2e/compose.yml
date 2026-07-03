@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 name: gnmi-kafka-demo
 
 networks:
@@ -96,15 +97,37 @@ services:
       - "8080:8080"
     networks: [demo-net]
 
+  # Bridges gnmi.telemetry into Prometheus: consumes the merged JSON records
+  # and serves their last-known state as gauges on :9108 (scraped in-net).
+  exporter:
+    build:
+      context: ..
+      dockerfile: cmd/exporter/Dockerfile
+    container_name: exporter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks: [demo-net]
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # Host 9090 already publishes the gateway's metrics (on nl6), so the
+    # Prometheus UI defaults to 9091: PROMETHEUS_HOST_PORT=19091 make up
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9091}:9090"
+    networks: [demo-net]
+
   grafana:
     image: grafana/grafana:13.1.0
     container_name: grafana
     depends_on:
-      kafka:
-        condition: service_healthy
+      prometheus:
+        condition: service_started
     environment:
-      # Backend Kafka datasource plugin (pinned); the version follows the plugin id.
-      GF_INSTALL_PLUGINS: "hamedkarbasi93-kafka-datasource 1.6.0"
       # Demo convenience: no login wall.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"

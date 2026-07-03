@@ -29,6 +29,7 @@ test:
 
 build:
 	CGO_ENABLED=0 $(GO) build -o $(BIN)/gateway ./cmd/gateway
+	CGO_ENABLED=0 $(GO) build -o $(BIN)/exporter ./cmd/exporter
 
 ## verify runs the full quality gate CI depends on
 verify: fmt-check vet lint test build
