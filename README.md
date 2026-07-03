@@ -69,6 +69,7 @@ The gateway is configured by a single file, [`configs/gateway.yaml`](./configs).
 ```yaml
 kafka:  { brokers: ["kafka:9092"], topic: gnmi.telemetry }
 gnmi:   { port: 9339, encoding: json_ietf, dial_timeout: 10s }
+metrics_port: 9090
 security_profiles:
   nl6-tls-noauth: { skip_verify: true }
 subscription_profiles:
@@ -115,6 +116,34 @@ with a self-signed cert (`skip_verify: true`) and no authentication — that is 
   it a security profile — mTLS via `ca_cert`/`client_cert`/`client_key`, and
   credentials via `username_env`/`password_env` (environment variable *names*;
   the values come from the container environment, never the YAML).
+- **Point at a real Kafka cluster**: the `kafka:` block optionally takes
+  `client_id`, `compression` (`none`/`gzip`/`snappy`/`lz4`/`zstd`), `tls` (+
+  `tls_skip_verify`), and `sasl_mechanism` (`PLAIN`/`SCRAM-SHA-256`/
+  `SCRAM-SHA-512`) with `username_env`/`password_env` following the same env-var
+  pattern. SASL requires `tls: true` — credentials over plaintext are rejected,
+  same as on the gNMI side. The demo broker is plaintext, so none of this is set.
+
+## Metrics
+
+With `metrics_port` set (the demo uses 9090), the gateway serves Prometheus
+metrics at `http://localhost:9090/metrics`:
+
+- `gateway_subscription_up{target, profile}` — 1 once the profile has delivered
+  a response and no subscribe error has been seen since, 0 otherwise. This is
+  the health signal: a target with one rejected profile and one streaming
+  profile shows as *degraded* here while its logs still scroll happily. Pair
+  with `rate(gateway_records_produced_total)` to also catch silent stalls
+  (a hung device that stops sending without erroring).
+- `gateway_subscribe_errors_total{target, profile}` — subscribe errors.
+- `gateway_records_produced_total{target}` — records successfully produced to
+  Kafka (broker-acknowledged, counted in the async produce callback).
+- `gateway_kafka_produce_errors_total` — failed produce attempts.
+- `gateway_dial_failures_total{target}` — failed gNMI dial attempts (each is
+  followed by a retry).
+
+Unset `metrics_port` and the gateway opens no listener at all. (The port is
+published on the `nl6` compose service because the gateway shares its network
+namespace.)
 
 ## Output format
 

@@ -155,6 +155,60 @@ func TestValidateTargets(t *testing.T) {
 	}
 }
 
+func TestValidateKafkaTransport(t *testing.T) {
+	cases := []struct {
+		name    string
+		kafka   Kafka
+		wantErr string // substring; empty means valid
+	}{
+		{"plaintext default", Kafka{Brokers: []string{"k:9092"}, Topic: "t"}, ""},
+		{"client_id and compression", Kafka{Brokers: []string{"k:9092"}, Topic: "t", ClientID: "gw", Compression: "snappy"}, ""},
+		{"unknown compression", Kafka{Brokers: []string{"k:9092"}, Topic: "t", Compression: "fastest"}, `unknown value "fastest"`},
+		{"compression case-insensitive", Kafka{Brokers: []string{"k:9092"}, Topic: "t", Compression: "Snappy"}, ""},
+		{"tls alone", Kafka{Brokers: []string{"k:9092"}, Topic: "t", TLS: true}, ""},
+		{"skip_verify without tls", Kafka{Brokers: []string{"k:9092"}, Topic: "t", TLSSkipVerify: true}, "tls_skip_verify requires"},
+		{"sasl without creds", Kafka{Brokers: []string{"k:9092"}, Topic: "t", TLS: true, SASLMechanism: "PLAIN"}, "requires username_env and password_env"},
+		{"sasl without tls", Kafka{Brokers: []string{"k:9092"}, Topic: "t", SASLMechanism: "SCRAM-SHA-512", UsernameEnv: "U", PasswordEnv: "P"}, "requires kafka.tls: true"},
+		{"creds without sasl", Kafka{Brokers: []string{"k:9092"}, Topic: "t", UsernameEnv: "U", PasswordEnv: "P"}, "require sasl_mechanism"},
+		{"one env only", Kafka{Brokers: []string{"k:9092"}, Topic: "t", UsernameEnv: "U"}, "must be set together"},
+		{"unknown mechanism", Kafka{Brokers: []string{"k:9092"}, Topic: "t", TLS: true, SASLMechanism: "OAUTH", UsernameEnv: "U", PasswordEnv: "P"}, `unknown value "OAUTH"`},
+		{"mechanism case-insensitive", Kafka{Brokers: []string{"k:9092"}, Topic: "t", SASLMechanism: "scram-sha-512", UsernameEnv: "U", PasswordEnv: "P"}, "requires kafka.tls: true"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validGateway(map[string]SubscriptionProfile{"p": onChange("/a/b")})
+			cfg.Kafka = tc.kafka
+			checkErr(t, cfg.validate(), tc.wantErr, "")
+		})
+	}
+}
+
+func TestValidateKafkaSASLEnvPresence(t *testing.T) {
+	cfg := validGateway(map[string]SubscriptionProfile{"p": onChange("/a/b")})
+	cfg.Kafka = Kafka{Brokers: []string{"k:9092"}, Topic: "t", TLS: true,
+		SASLMechanism: "SCRAM-SHA-512", UsernameEnv: "KAFKA_TEST_USER", PasswordEnv: "KAFKA_TEST_PASS"}
+
+	t.Setenv("KAFKA_TEST_USER", "svc")
+	checkErr(t, cfg.validate(), "KAFKA_TEST_PASS is unset or empty", "")
+
+	t.Setenv("KAFKA_TEST_PASS", "s3cret")
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate() = %v, want nil", err)
+	}
+}
+
+func TestValidateMetricsPort(t *testing.T) {
+	cfg := validGateway(map[string]SubscriptionProfile{"p": onChange("/a/b")})
+	cfg.MetricsPort = 9090
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate() = %v, want nil", err)
+	}
+	cfg.MetricsPort = -1
+	checkErr(t, cfg.validate(), "metrics_port must be a port number", "")
+	cfg.MetricsPort = 70000
+	checkErr(t, cfg.validate(), "metrics_port must be a port number", "")
+}
+
 func TestOverlapIsScopedPerTarget(t *testing.T) {
 	// Profiles "a" and "b" duplicate the same path: legal while bound to
 	// different targets, rejected when one target binds both.

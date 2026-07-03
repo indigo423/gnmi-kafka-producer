@@ -4,6 +4,18 @@
 kafka:
   brokers: ["kafka:9092"]
   topic: gnmi.telemetry
+  # Optional hardening for real clusters (demo Kafka is plaintext, no auth):
+  # client_id: gnmi-gateway
+  # compression: snappy
+  # tls: true
+  # sasl_mechanism: SCRAM-SHA-512      # PLAIN, SCRAM-SHA-256 or SCRAM-SHA-512
+  # username_env: KAFKA_USER           # env var NAMES; values from the environment
+  # password_env: KAFKA_PASS
+
+# Prometheus metrics at http://:9090/metrics (unset to disable). Includes
+# gateway_subscription_up{target,profile} — a degraded target (one profile
+# rejected, the other streaming) is visible here, not in the logs.
+metrics_port: 9090
 
 # Shared gNMI dial defaults. Authentication and transport security live in
 # security_profiles below, referenced per target.

@@ -14,6 +14,7 @@ import (
 	"github.com/tbotnz/gnmi-kafka-producer/internal/config"
 	gnmix "github.com/tbotnz/gnmi-kafka-producer/internal/gnmi"
 	"github.com/tbotnz/gnmi-kafka-producer/internal/kafka"
+	"github.com/tbotnz/gnmi-kafka-producer/internal/metrics"
 )
 
 func main() {
@@ -36,6 +37,15 @@ func main() {
 
 	log.Printf("gateway starting: targets=%d profiles=%d kafka=%v topic=%s",
 		len(cfg.Targets), len(cfg.Profiles), cfg.Kafka.Brokers, cfg.Kafka.Topic)
+
+	if cfg.MetricsPort > 0 {
+		go func() {
+			log.Printf("metrics: serving http://:%d/metrics", cfg.MetricsPort)
+			// The operator asked for metrics; running without them would be a
+			// silent loss of the health signal, so a bind failure is fatal.
+			log.Fatalf("metrics: %v", metrics.Serve(cfg.MetricsPort))
+		}()
+	}
 
 	var wg sync.WaitGroup
 	for _, t := range cfg.Targets {
@@ -72,8 +82,10 @@ func runTarget(ctx context.Context, t config.Target, cfg *config.Gateway, produc
 	}
 
 	// One Subscribe RPC per profile (targets may reject mixed-mode lists);
-	// ReadSubscriptions fans them all into one response stream.
+	// ReadSubscriptions fans them all into one response stream. Health gauges
+	// start at 0 and flip on attributed updates/errors below.
 	for name, req := range reqs {
+		metrics.SetSubscriptionUp(t.Name, name, false)
 		go tg.Subscribe(ctx, req, name)
 	}
 	rspCh, errCh := tg.ReadSubscriptions()
@@ -89,12 +101,15 @@ func runTarget(ctx context.Context, t config.Target, cfg *config.Gateway, produc
 			return
 		case e := <-errCh:
 			if e != nil {
-				log.Printf("[%s] subscribe error: %v", t.Name, e.Err)
+				metrics.IncSubscribeError(t.Name, e.SubscriptionName)
+				metrics.SetSubscriptionUp(t.Name, e.SubscriptionName, false)
+				log.Printf("[%s] subscribe error (%s): %v", t.Name, e.SubscriptionName, e.Err)
 			}
 		case rsp, ok := <-rspCh:
 			if !ok {
 				return
 			}
+			metrics.SetSubscriptionUp(t.Name, rsp.SubscriptionName, true)
 			notif := rsp.Response.GetUpdate()
 			if notif == nil {
 				continue
@@ -105,7 +120,7 @@ func runTarget(ctx context.Context, t config.Target, cfg *config.Gateway, produc
 					log.Printf("[%s] marshal: %v", t.Name, err)
 					continue
 				}
-				producer.Send(ctx, []byte(rec.Key), body)
+				producer.Send(ctx, t.Name, []byte(rec.Key), body)
 			}
 		}
 	}
