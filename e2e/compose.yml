@@ -108,9 +108,12 @@ services:
   # Keeps the gateway's return route to the simulated devices installed. nl6
   # forwards device traffic without SNAT, so dial-out TCP arrives sourced from
   # 192.168.100.x and replies must route back via nl6's static address. The
-  # gateway image is distroless (no shell, nonroot), so a sidecar in the
-  # gateway's netns holds the route; `ip route replace` is idempotent and the
-  # loop re-installs it if the netns is recreated.
+  # gateway image is distroless (no shell, nonroot), so a sidecar joins the
+  # gateway's netns and holds the route (`ip route replace` is idempotent).
+  # A gateway restart tears down that netns and gives the gateway a fresh one;
+  # this sidecar stays bound to the dead namespace (it sees no eth0), so it
+  # exits, and restart: unless-stopped brings it back attached to the new
+  # gateway netns — the route follows the gateway across restarts.
   gateway-route:
     image: alpine:3.21
     container_name: gateway-route
@@ -123,7 +126,7 @@ services:
     command:
       - sh
       - -c
-      - "while true; do ip route replace 192.168.100.0/24 via 172.28.0.10; sleep 10; done"
+      - "while ip link show eth0 >/dev/null 2>&1; do ip route replace 192.168.100.0/24 via 172.28.0.10; sleep 5; done; echo 'gateway netns gone; exiting to re-attach'; exit 1"
     restart: unless-stopped
 
   kafka-ui:
