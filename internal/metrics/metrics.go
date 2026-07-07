@@ -40,6 +40,24 @@ var (
 		Name: "gateway_dial_failures_total",
 		Help: "gNMI dial attempts that failed (each is followed by a retry), per target.",
 	}, []string{"target"})
+
+	dialoutStreamsActive = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "gateway_dialout_streams_active",
+		Help: "Currently open gNMIReverse Publish streams on the dial-out listener.",
+	})
+
+	dialoutUpdatesReceived = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gateway_dialout_updates_received_total",
+		Help: "Dial-out notifications accepted, per resolved registry device name.",
+	}, []string{"target"})
+
+	// Deliberately unlabelled: the incoming target string is peer-controlled
+	// and would be an unbounded label cardinality leak. The offending value is
+	// logged instead.
+	dialoutUnknownTarget = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "gateway_dialout_unknown_target_total",
+		Help: "Dial-out notifications dropped because Prefix.Target matched no dialout.devices entry (value appears in the gateway log).",
+	})
 )
 
 // SetSubscriptionUp marks a target's subscription profile as streaming (true)
@@ -66,6 +84,18 @@ func IncKafkaProduceError() {
 
 func IncDialFailure(target string) {
 	dialFailures.WithLabelValues(target).Inc()
+}
+
+// DialoutStreamOpened/Closed track the active Publish stream gauge.
+func DialoutStreamOpened() { dialoutStreamsActive.Inc() }
+func DialoutStreamClosed() { dialoutStreamsActive.Dec() }
+
+func IncDialoutUpdateReceived(target string) {
+	dialoutUpdatesReceived.WithLabelValues(target).Inc()
+}
+
+func IncDialoutUnknownTarget() {
+	dialoutUnknownTarget.Inc()
 }
 
 // Serve blocks serving /metrics on the given port; run it in a goroutine.

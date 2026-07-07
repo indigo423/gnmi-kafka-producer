@@ -162,6 +162,32 @@ type Target struct {
 	Subscriptions []string          `yaml:"subscriptions"`
 }
 
+// Dialout configures the gNMIReverse collector listener: devices open the
+// connection and push Publish streams to it. TLS omitted means a plaintext
+// listener (the nl6 demo); present, the listener serves cert_file/key_file.
+// Devices is the attribution registry — incoming notifications are matched on
+// Notification.Prefix.Target against Address.
+type Dialout struct {
+	Listen  string          `yaml:"listen"`
+	TLS     *DialoutTLS     `yaml:"tls"`
+	Devices []DialoutDevice `yaml:"devices"`
+}
+
+// DialoutTLS holds the listener's server certificate.
+type DialoutTLS struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+}
+
+// DialoutDevice is one entry in the dial-out device registry. Address is the
+// value the device announces in Prefix.Target (nl6: its management IP); Name
+// and Labels enrich its records exactly like a dial-in target's.
+type DialoutDevice struct {
+	Name    string            `yaml:"name"`
+	Address string            `yaml:"address"`
+	Labels  map[string]string `yaml:"labels"`
+}
+
 // SubscriptionProfile is one named block under subscription_profiles: a set of
 // gNMI paths sharing a collection mode. SAMPLE profiles require sample_interval;
 // ON_CHANGE profiles may set heartbeat_interval to force a resend when a leaf
