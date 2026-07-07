@@ -75,7 +75,8 @@ func registry() config.Dialout {
 	}
 }
 
-// startServer runs a Server on a random port and returns its address.
+// startServer runs a Server on a random port and returns its address. It hands
+// Serve the already-bound listener, so there is no close-and-relisten race.
 func startServer(t *testing.T, cfg config.Dialout, sink Sink) string {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -83,17 +84,15 @@ func startServer(t *testing.T, cfg config.Dialout, sink Sink) string {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := lis.Addr().String()
-	_ = lis.Close() // Run re-listens on the now-known-free port
-	cfg.Listen = addr
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
-	go func() { done <- New(cfg, sink).Run(ctx) }()
+	go func() { done <- New(cfg, sink).Serve(ctx, lis) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
-			t.Errorf("server Run: %v", err)
+			t.Errorf("server Serve: %v", err)
 		}
 	})
 	waitReachable(t, addr)

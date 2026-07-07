@@ -38,6 +38,11 @@ type Sink interface {
 // tracks every drop, the log samples the offending value.
 const unknownLogInterval = 10 * time.Second
 
+// shutdownGrace bounds GracefulStop on ctx cancel: dial-out devices hold their
+// Publish streams open indefinitely (they never half-close), so a graceful
+// stop would otherwise block forever and hang the process until SIGKILL.
+const shutdownGrace = 5 * time.Second
+
 // device pairs a registry entry with its Enricher. The Enricher is not safe
 // for concurrent use and holds per-device rate state, so it lives here (one
 // per device, created once) rather than per stream — rates survive a device's
@@ -57,6 +62,11 @@ type Server struct {
 	sink    Sink
 	devices map[string]*device // keyed by registry address (= Prefix.Target)
 
+	// appCtx is the long-lived server context (set in Serve). Produces use it
+	// rather than a per-stream context so records already buffered when a
+	// device disconnects still flush, matching the dial-in path.
+	appCtx context.Context
+
 	unknownMu      sync.Mutex
 	lastUnknownLog time.Time
 }
@@ -69,13 +79,21 @@ func New(cfg config.Dialout, sink Sink) *Server {
 	return &Server{cfg: cfg, sink: sink, devices: devices}
 }
 
-// Run serves the listener until ctx is cancelled, then drains gracefully.
-// It blocks; run it in a goroutine.
+// Run listens on cfg.Listen and serves until ctx is cancelled. It blocks; run
+// it in a goroutine.
 func (s *Server) Run(ctx context.Context) error {
 	lis, err := net.Listen("tcp", s.cfg.Listen)
 	if err != nil {
 		return err
 	}
+	return s.Serve(ctx, lis)
+}
+
+// Serve runs the gNMIReverse server on lis until ctx is cancelled, then drains.
+// Split from Run so tests can supply an already-bound listener (no
+// close-and-relisten race). It blocks; run it in a goroutine.
+func (s *Server) Serve(ctx context.Context, lis net.Listener) error {
+	s.appCtx = ctx
 	var opts []grpc.ServerOption
 	if s.cfg.TLS != nil {
 		creds, err := credentials.NewServerTLSFromFile(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
@@ -88,9 +106,17 @@ func (s *Server) Run(ctx context.Context) error {
 	gnmireverse.RegisterGNMIReverseServer(gs, s)
 	go func() {
 		<-ctx.Done()
-		gs.GracefulStop()
+		// GracefulStop waits for in-flight Publish streams, which dial-out
+		// devices hold open forever; bound the wait, then force-stop.
+		stopped := make(chan struct{})
+		go func() { gs.GracefulStop(); close(stopped) }()
+		select {
+		case <-stopped:
+		case <-time.After(shutdownGrace):
+			gs.Stop()
+		}
 	}()
-	log.Printf("dialout: listening on %s (tls=%v, devices=%d)", s.cfg.Listen, s.cfg.TLS != nil, len(s.devices))
+	log.Printf("dialout: listening on %s (tls=%v, devices=%d)", lis.Addr(), s.cfg.TLS != nil, len(s.devices))
 	if err := gs.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 		return err
 	}
@@ -110,11 +136,11 @@ func (s *Server) Publish(stream grpc.ClientStreamingServer[gnmipb.SubscribeRespo
 		if err != nil {
 			return err
 		}
-		s.handle(stream.Context(), rsp)
+		s.handle(rsp)
 	}
 }
 
-func (s *Server) handle(ctx context.Context, rsp *gnmipb.SubscribeResponse) {
+func (s *Server) handle(rsp *gnmipb.SubscribeResponse) {
 	notif := rsp.GetUpdate()
 	if notif == nil {
 		return
@@ -137,7 +163,7 @@ func (s *Server) handle(ctx context.Context, rsp *gnmipb.SubscribeResponse) {
 			log.Printf("[%s] marshal: %v", dev.entry.Name, err)
 			continue
 		}
-		s.sink.Send(ctx, dev.entry.Name, []byte(rec.Key), body)
+		s.sink.Send(s.appCtx, dev.entry.Name, []byte(rec.Key), body)
 	}
 }
 
