@@ -128,7 +128,7 @@ func TestValidateTargets(t *testing.T) {
 		mutate  func(*Gateway)
 		wantErr string
 	}{
-		{"no targets", func(g *Gateway) { g.Targets = nil }, "targets must have at least one entry"},
+		{"no targets and no dialout", func(g *Gateway) { g.Targets = nil }, "at least one of: dial-in targets or a dialout listener"},
 		{"missing name", func(g *Gateway) { g.Targets[0].Name = "" }, "needs a name"},
 		{"duplicate name", func(g *Gateway) { g.Targets = append(g.Targets, g.Targets[0]) }, "duplicate target name"},
 		{"missing address", func(g *Gateway) { g.Targets[0].Address = "" }, "address is required"},
@@ -358,5 +358,98 @@ func checkErr(t *testing.T, err error, want, profile string) {
 	}
 	if profile != "" && !strings.Contains(err.Error(), profile) {
 		t.Fatalf("error %q does not name profile %q", err, profile)
+	}
+}
+
+// validDialout returns a minimal correct dialout block for mutation in tests.
+// Its device addresses differ from validGateway's target (192.168.100.1) so
+// the two registries don't collide when a test enables both modes.
+func validDialout() *Dialout {
+	return &Dialout{
+		Listen: ":57400",
+		Devices: []DialoutDevice{
+			{Name: "d1", Address: "192.168.200.1", Labels: map[string]string{"role": "leaf"}},
+			{Name: "d2", Address: "192.168.200.2"},
+		},
+	}
+}
+
+func TestValidateDialout(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Dialout)
+		wantErr string // substring; empty means valid
+	}{
+		{"valid plaintext", func(_ *Dialout) {}, ""},
+		{"valid TLS pair", func(d *Dialout) {
+			d.TLS = &DialoutTLS{CertFile: "/c.crt", KeyFile: "/c.key"}
+		}, ""},
+		{"missing listen", func(d *Dialout) { d.Listen = "" }, "listen is required"},
+		{"malformed listen", func(d *Dialout) { d.Listen = "57400" }, "not host:port"},
+		{"TLS missing key", func(d *Dialout) {
+			d.TLS = &DialoutTLS{CertFile: "/c.crt"}
+		}, "cert_file and key_file must be set together"},
+		{"empty devices", func(d *Dialout) { d.Devices = nil }, "dialout.devices must have at least one entry"},
+		{"device missing name", func(d *Dialout) { d.Devices[0].Name = "" }, "every device needs a name"},
+		{"duplicate device name", func(d *Dialout) { d.Devices[1].Name = "d1" }, `duplicate device name "d1"`},
+		{"device missing address", func(d *Dialout) { d.Devices[1].Address = "" }, "dialout.devices.d2: address is required"},
+		{"duplicate device address", func(d *Dialout) { d.Devices[1].Address = "192.168.200.1" }, `share address "192.168.200.1"`},
+		{"reserved label key", func(d *Dialout) {
+			d.Devices[0].Labels = map[string]string{"device": "x"}
+		}, `label key "device" is reserved`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validGateway(map[string]SubscriptionProfile{"p": onChange("/interfaces/interface[name=*]/state/oper-status")})
+			cfg.Dialout = validDialout()
+			tc.mutate(cfg.Dialout)
+			checkErr(t, cfg.validate(), tc.wantErr, "")
+		})
+	}
+}
+
+func TestValidateModeCombinations(t *testing.T) {
+	profiles := map[string]SubscriptionProfile{"p": onChange("/interfaces/interface[name=*]/state/oper-status")}
+
+	t.Run("dial-in only stays valid", func(t *testing.T) {
+		cfg := validGateway(profiles)
+		checkErr(t, cfg.validate(), "", "")
+	})
+	t.Run("dial-out only: empty targets and no profiles is valid", func(t *testing.T) {
+		cfg := validGateway(profiles)
+		cfg.Targets = nil
+		cfg.Profiles = nil
+		cfg.Dialout = validDialout()
+		checkErr(t, cfg.validate(), "", "")
+	})
+	t.Run("both modes together are valid", func(t *testing.T) {
+		cfg := validGateway(profiles)
+		cfg.Dialout = validDialout()
+		checkErr(t, cfg.validate(), "", "")
+	})
+	t.Run("device sharing a target's address is rejected", func(t *testing.T) {
+		cfg := validGateway(profiles) // target t1 @ 192.168.100.1
+		cfg.Dialout = validDialout()
+		cfg.Dialout.Devices[0].Address = "192.168.100.1"
+		checkErr(t, cfg.validate(), "is also a dial-in target", "")
+	})
+	t.Run("device sharing a target's name is rejected", func(t *testing.T) {
+		cfg := validGateway(profiles) // target t1
+		cfg.Dialout = validDialout()
+		cfg.Dialout.Devices[0].Name = "t1"
+		checkErr(t, cfg.validate(), "is also a dial-in target", "")
+	})
+	t.Run("neither mode is rejected", func(t *testing.T) {
+		cfg := validGateway(profiles)
+		cfg.Targets = nil
+		checkErr(t, cfg.validate(), "at least one of: dial-in targets or a dialout listener", "")
+	})
+}
+
+func TestDialoutDeviceStaticFields(t *testing.T) {
+	d := DialoutDevice{Name: "d1", Address: "192.168.100.1", Labels: map[string]string{"role": "leaf"}}
+	got := d.StaticFields()
+	if got["target"] != "d1" || got["role"] != "leaf" || len(got) != 2 {
+		t.Fatalf("StaticFields() = %v, want target=d1 role=leaf", got)
 	}
 }

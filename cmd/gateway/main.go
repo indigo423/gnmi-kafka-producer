@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/tbotnz/gnmi-kafka-producer/internal/config"
+	"github.com/tbotnz/gnmi-kafka-producer/internal/dialout"
 	gnmix "github.com/tbotnz/gnmi-kafka-producer/internal/gnmi"
 	"github.com/tbotnz/gnmi-kafka-producer/internal/kafka"
 	"github.com/tbotnz/gnmi-kafka-producer/internal/metrics"
@@ -48,6 +49,17 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
+	if cfg.Dialout != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// A dead listener means every dial-out device streams into the
+			// void, so a serve failure is fatal (Run returns nil on ctx cancel).
+			if err := dialout.New(*cfg.Dialout, producer).Run(ctx); err != nil {
+				log.Fatalf("dialout: %v", err)
+			}
+		}()
+	}
 	for _, t := range cfg.Targets {
 		wg.Add(1)
 		go func(t config.Target) {

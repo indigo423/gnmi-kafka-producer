@@ -4,6 +4,12 @@ name: gnmi-kafka-demo
 networks:
   demo-net:
     driver: bridge
+    # Fixed subnet so nl6 can hold a static address: the gateway's return
+    # route to the simulated devices (see gateway-route) needs a stable
+    # next-hop, and routes can't use DNS names.
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
 
 services:
   nl6:
@@ -11,30 +17,43 @@ services:
     container_name: nl6
     hostname: nl6
     # nl6 puts each simulated device on its own IP inside a TUN/netns, so it
-    # needs these caps and the tun device. The gateway joins this namespace
-    # (network_mode below) to reach the per-device gNMI endpoints.
+    # needs these caps and the tun device. Devices dial OUT from there to the
+    # gateway's gNMIReverse listener — nobody dials in, so nothing shares this
+    # namespace.
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
     devices:
       - /dev/net/tun
-    # Auto-create 3 devices at 192.168.100.1..3; each exposes gNMI on :9339.
-    command: ["-auto-start-ip", "192.168.100.1", "-auto-count", "3"]
-    networks: [demo-net]
-    # The gateway shares this netns (network_mode below) and cannot publish
-    # ports of its own, so its Prometheus metrics port is published here.
-    # Override the host side if :9090 is taken (e.g. a local Prometheus):
-    #   GATEWAY_METRICS_HOST_PORT=19090 make up
-    ports:
-      - "${GATEWAY_METRICS_HOST_PORT:-9090}:9090"
+    # Auto-create 3 devices at 192.168.100.1..3, pushing dial-out telemetry
+    # (Arista gNMIReverse, SAMPLE over the full state subtree every 5s,
+    # plaintext) to the gateway. Each device still serves dial-in on :9339.
+    command:
+      [
+        "-auto-start-ip", "192.168.100.1",
+        "-auto-count", "3",
+        "-gnmi-mode", "dial-out",
+        "-gnmi-dialout-collector", "gateway:57400",
+        "-gnmi-dialout-sub-mode", "sample",
+        "-gnmi-dialout-interval", "5s",
+        "-gnmi-dialout-tls=false",
+      ]
+    networks:
+      demo-net:
+        # Static: next-hop of the gateway's return route (gateway-route below).
+        ipv4_address: 172.28.0.10
+    # nl6 resolves the collector hostname at startup and exits (fatal) if it
+    # doesn't resolve, so wait until the gateway is on the network. restart:
+    # unless-stopped below covers stragglers either way.
+    depends_on:
+      gateway:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/api/v1/version >/dev/null 2>&1"]
       interval: 5s
       timeout: 5s
       retries: 24
       start_period: 10s
-    # If nl6 restarts it gets a fresh netns; keep it running so the gateway,
-    # which shares this namespace, can recover.
     restart: unless-stopped
 
   kafka:
@@ -70,17 +89,44 @@ services:
       context: ..
       dockerfile: cmd/gateway/Dockerfile
     container_name: gateway
-    # Share nl6's network namespace so the gateway can dial the per-device TUN
-    # IPs (192.168.100.x:9339). Kafka is still reachable because nl6 is on
-    # demo-net. A service using network_mode cannot also declare `networks:`.
-    network_mode: "service:nl6"
+    # An ordinary service: nl6's devices dial out TO the gateway (gNMIReverse
+    # on :57400, in-network only), so the gateway no longer shares nl6's netns
+    # and publishes its own metrics port. No nl6 dependency either — devices
+    # reconnect with backoff until the listener is up.
     depends_on:
-      nl6:
-        condition: service_healthy
       kafka:
         condition: service_healthy
+    networks: [demo-net]
+    # Override the host side if :9090 is taken (e.g. a local Prometheus):
+    #   GATEWAY_METRICS_HOST_PORT=19090 make up
+    ports:
+      - "${GATEWAY_METRICS_HOST_PORT:-9090}:9090"
     volumes:
       - ../configs/gateway.yaml:/etc/gnmi-kafka/gateway.yaml:ro
+    restart: unless-stopped
+
+  # Keeps the gateway's return route to the simulated devices installed. nl6
+  # forwards device traffic without SNAT, so dial-out TCP arrives sourced from
+  # 192.168.100.x and replies must route back via nl6's static address. The
+  # gateway image is distroless (no shell, nonroot), so a sidecar joins the
+  # gateway's netns and holds the route (`ip route replace` is idempotent).
+  # A gateway restart tears down that netns and gives the gateway a fresh one;
+  # this sidecar stays bound to the dead namespace (it sees no eth0), so it
+  # exits, and restart: unless-stopped brings it back attached to the new
+  # gateway netns — the route follows the gateway across restarts.
+  gateway-route:
+    image: alpine:3.21
+    container_name: gateway-route
+    network_mode: "service:gateway"
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      gateway:
+        condition: service_started
+    command:
+      - sh
+      - -c
+      - "while ip link show eth0 >/dev/null 2>&1; do ip route replace 192.168.100.0/24 via 172.28.0.10; sleep 5; done; echo 'gateway netns gone; exiting to re-attach'; exit 1"
     restart: unless-stopped
 
   kafka-ui:
@@ -115,8 +161,8 @@ services:
     container_name: prometheus
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    # Host 9090 already publishes the gateway's metrics (on nl6), so the
-    # Prometheus UI defaults to 9091: PROMETHEUS_HOST_PORT=19091 make up
+    # Host 9090 already publishes the gateway's metrics, so the Prometheus UI
+    # defaults to 9091: PROMETHEUS_HOST_PORT=19091 make up
     ports:
       - "${PROMETHEUS_HOST_PORT:-9091}:9090"
     networks: [demo-net]
