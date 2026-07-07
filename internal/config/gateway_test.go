@@ -362,12 +362,14 @@ func checkErr(t *testing.T, err error, want, profile string) {
 }
 
 // validDialout returns a minimal correct dialout block for mutation in tests.
+// Its device addresses differ from validGateway's target (192.168.100.1) so
+// the two registries don't collide when a test enables both modes.
 func validDialout() *Dialout {
 	return &Dialout{
 		Listen: ":57400",
 		Devices: []DialoutDevice{
-			{Name: "d1", Address: "192.168.100.1", Labels: map[string]string{"role": "leaf"}},
-			{Name: "d2", Address: "192.168.100.2"},
+			{Name: "d1", Address: "192.168.200.1", Labels: map[string]string{"role": "leaf"}},
+			{Name: "d2", Address: "192.168.200.2"},
 		},
 	}
 }
@@ -391,7 +393,7 @@ func TestValidateDialout(t *testing.T) {
 		{"device missing name", func(d *Dialout) { d.Devices[0].Name = "" }, "every device needs a name"},
 		{"duplicate device name", func(d *Dialout) { d.Devices[1].Name = "d1" }, `duplicate device name "d1"`},
 		{"device missing address", func(d *Dialout) { d.Devices[1].Address = "" }, "dialout.devices.d2: address is required"},
-		{"duplicate device address", func(d *Dialout) { d.Devices[1].Address = "192.168.100.1" }, `share address "192.168.100.1"`},
+		{"duplicate device address", func(d *Dialout) { d.Devices[1].Address = "192.168.200.1" }, `share address "192.168.200.1"`},
 		{"reserved label key", func(d *Dialout) {
 			d.Devices[0].Labels = map[string]string{"device": "x"}
 		}, `label key "device" is reserved`},
@@ -424,6 +426,18 @@ func TestValidateModeCombinations(t *testing.T) {
 		cfg := validGateway(profiles)
 		cfg.Dialout = validDialout()
 		checkErr(t, cfg.validate(), "", "")
+	})
+	t.Run("device sharing a target's address is rejected", func(t *testing.T) {
+		cfg := validGateway(profiles) // target t1 @ 192.168.100.1
+		cfg.Dialout = validDialout()
+		cfg.Dialout.Devices[0].Address = "192.168.100.1"
+		checkErr(t, cfg.validate(), "is also a dial-in target", "")
+	})
+	t.Run("device sharing a target's name is rejected", func(t *testing.T) {
+		cfg := validGateway(profiles) // target t1
+		cfg.Dialout = validDialout()
+		cfg.Dialout.Devices[0].Name = "t1"
+		checkErr(t, cfg.validate(), "is also a dial-in target", "")
 	})
 	t.Run("neither mode is rejected", func(t *testing.T) {
 		cfg := validGateway(profiles)

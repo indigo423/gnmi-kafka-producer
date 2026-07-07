@@ -28,27 +28,23 @@ var reservedLabelKeys = map[string]bool{
 	"device": true, "interface": true, "timestamp": true, "target": true,
 }
 
-// StaticFields returns the per-target constant record fields: the labels
-// verbatim plus "target" carrying the target name.
-func (t Target) StaticFields() map[string]any {
-	fields := make(map[string]any, len(t.Labels)+1)
-	for k, v := range t.Labels {
+// staticFields builds the per-target constant record fields: the labels
+// verbatim plus "target" carrying the target/device name. Shared by dial-in
+// targets and dial-out devices so both emit the identical constant field set.
+func staticFields(name string, labels map[string]string) map[string]any {
+	fields := make(map[string]any, len(labels)+1)
+	for k, v := range labels {
 		fields[k] = v
 	}
-	fields["target"] = t.Name
+	fields["target"] = name
 	return fields
 }
 
-// StaticFields mirrors Target.StaticFields for dial-out devices, so their
-// records carry the identical constant field set.
-func (d DialoutDevice) StaticFields() map[string]any {
-	fields := make(map[string]any, len(d.Labels)+1)
-	for k, v := range d.Labels {
-		fields[k] = v
-	}
-	fields["target"] = d.Name
-	return fields
-}
+// StaticFields returns the target's constant record fields.
+func (t Target) StaticFields() map[string]any { return staticFields(t.Name, t.Labels) }
+
+// StaticFields returns the dial-out device's constant record fields.
+func (d DialoutDevice) StaticFields() map[string]any { return staticFields(d.Name, d.Labels) }
 
 func LoadGateway(path string) (*Gateway, error) {
 	var c Gateway
@@ -103,6 +99,33 @@ func (c *Gateway) validate() error {
 	for _, t := range c.Targets {
 		if err := validateNoOverlap(t.Name, t.Subscriptions, parsed); err != nil {
 			return err
+		}
+	}
+	return c.validateNoRegistryCollision()
+}
+
+// validateNoRegistryCollision rejects a name or address shared between a
+// dial-in target and a dial-out device. Each sub-validator enforces uniqueness
+// only within its own registry, but a shared address makes both paths produce
+// under the same Kafka key (device|interface) with independent Enricher rate
+// baselines, interleaving them into garbage bps values — the same corruption
+// the intra-registry duplicate-address check prevents.
+func (c *Gateway) validateNoRegistryCollision() error {
+	if c.Dialout == nil || len(c.Targets) == 0 {
+		return nil
+	}
+	targetNames := make(map[string]bool, len(c.Targets))
+	targetAddrs := make(map[string]bool, len(c.Targets))
+	for _, t := range c.Targets {
+		targetNames[t.Name] = true
+		targetAddrs[t.Address] = true
+	}
+	for _, d := range c.Dialout.Devices {
+		if targetNames[d.Name] {
+			return fmt.Errorf("dialout.devices.%s: name %q is also a dial-in target", d.Name, d.Name)
+		}
+		if targetAddrs[d.Address] {
+			return fmt.Errorf("dialout.devices.%s: address %q is also a dial-in target (their records would collide under one Kafka key)", d.Name, d.Address)
 		}
 	}
 	return nil
