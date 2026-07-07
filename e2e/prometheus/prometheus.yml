@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Prometheus for the demo stack: scrapes the Kafka→Prometheus exporter (the
-# telemetry itself) and the gateway's own operational metrics. The gateway
-# shares nl6's network namespace, so its :9090 endpoint answers on `nl6`.
+# telemetry itself) and the gateway's own operational metrics.
 global:
-  scrape_interval: 5s # match the gateway's 5s sample_interval
+  scrape_interval: 5s # match nl6's 5s dial-out sample interval
 
 scrape_configs:
   - job_name: telemetry
@@ -11,4 +10,4 @@ scrape_configs:
       - targets: ["exporter:9108"]
   - job_name: gateway
     static_configs:
-      - targets: ["nl6:9090"]
+      - targets: ["gateway:9090"]

@@ -2,7 +2,9 @@
 
 Docker Compose stack that streams gNMI telemetry from a network simulator into
 Kafka. The gateway reads a single YAML config and can be deployed and
-reconfigured independently.
+reconfigured independently. It collects in two modes: **dial-out** (devices
+push to its gNMIReverse listener — what the demo runs) and **dial-in** (it
+dials targets and Subscribes).
 
 ```mermaid
 flowchart LR
@@ -16,7 +18,7 @@ flowchart LR
     GF[grafana :3000]
 
     gconf --> GW
-    GW -- Subscribe --> NL6
+    NL6 -- "Publish (gNMI dial-out)" --> GW
     GW -- produce JSON --> K
     K --> UI
     K -- consume --> EX
@@ -29,11 +31,11 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph sim["network simulator"]
-        NL6["nl6<br/>ghcr.io/labmonkeys-space/nl6:latest<br/>gNMI :9339 (TLS), self-animating"]
+        NL6["nl6<br/>ghcr.io/labmonkeys-space/nl6:latest<br/>devices dial out (gNMIReverse), self-animating"]
     end
 
     subgraph producer["producer (Go, distroless)"]
-        GW["gateway<br/>cmd/gateway<br/>gNMI Subscribe, flatten, produce to Kafka"]
+        GW["gateway<br/>cmd/gateway<br/>gNMIReverse listener :57400 + gNMI Subscribe,<br/>flatten, produce to Kafka"]
     end
 
     subgraph transport["transport"]
@@ -50,7 +52,7 @@ flowchart TB
         GF["grafana<br/>grafana/grafana:13.1.0<br/>Prometheus datasource<br/>dashboard :3000 host"]
     end
 
-    GW -- gNMI --> NL6
+    NL6 -- "Publish (dial-out)" --> GW
     GW -- produce --> K
     UI -- read --> K
     EX -- consume --> K
@@ -70,9 +72,10 @@ open http://localhost:9091    # prometheus: gnmi_* (telemetry) and gateway_* (op
 
 [nl6](https://nl6.eu) boots in seconds and emits self-animating telemetry
 (cycling interface counters, sine-wave CPU/mem/temp), so there is no separate
-stimulus generator — the data moves on its own. The gateway shares nl6's network
-namespace (`network_mode: "service:nl6"` in the compose file) so it can dial
-nl6's per-device gNMI endpoints.
+stimulus generator — the data moves on its own. Its devices **dial out**: each
+opens a gRPC connection to the gateway's gNMIReverse listener and pushes
+telemetry, so the collector never reaches into the device network (the
+firewall/NAT-friendly direction).
 
 ## Configuration
 
@@ -80,54 +83,48 @@ The gateway is configured by a single file, [`configs/gateway.yaml`](./configs).
 
 ```yaml
 kafka:  { brokers: ["kafka:9092"], topic: gnmi.telemetry }
-gnmi:   { port: 9339, encoding: json_ietf, dial_timeout: 10s }
 metrics_port: 9090
-security_profiles:
-  nl6-tls-noauth: { skip_verify: true }
-subscription_profiles:
-  interface-counters:
-    mode: SAMPLE
-    sample_interval: 5s
-    paths: [/interfaces/interface[name=*]/state/counters/in-octets, ...]
-  interface-status:
-    mode: ON_CHANGE
-    heartbeat_interval: 5m
-    paths: [/interfaces/interface[name=*]/state/oper-status, ...]
-targets:
-  - name: nl6-dev-01
-    address: 192.168.100.1
-    security: nl6-tls-noauth
-    labels: { role: leaf, region: lab, vendor: nl6 }
-    subscriptions: [interface-counters, interface-status]
+dialout:
+  listen: :57400            # gNMIReverse Publish listener (plaintext without tls:)
+  # tls: { cert_file: ..., key_file: ... }
+  devices:                  # attribution registry, matched on Prefix.Target
+    - name: nl6-dev-01
+      address: 192.168.100.1
+      labels: { role: leaf, region: lab, vendor: nl6 }
 ```
 
-Paths are grouped into named **subscription profiles**, each with its own
-collection mode: `SAMPLE` re-reads its paths every `sample_interval`; `ON_CHANGE`
-fires only on state transitions (plus an optional `heartbeat_interval` resend so
-quiet leaves are still confirmed alive). Devices are declared in the **targets**
-registry: each target names a device, references a **security profile** for the
-gRPC channel, and binds the subscription profiles to collect; its `labels` ride
-on every record. At startup the gateway rejects oversubscribed targets — the
-same path twice, or a parent container together with one of its own leaves
-(e.g. `.../state` plus `.../state/counters/in-octets`) among one target's bound
-profiles — since those make the device stream the same data more than once.
+**Dial-out** (the demo): devices push standard `gnmi.SubscribeResponse`
+messages over the Arista [gNMIReverse](https://aristanetworks.github.io/openmgmt/telemetry/adapters/gnmireverse/)
+`Publish` RPC. Each notification carries its device identity in-band
+(`Prefix.Target`, set by nl6 to the device's management IP) and is matched
+against the `dialout.devices` registry — the entry's `name` and `labels` ride
+on every record, exactly as for a dial-in target. Updates from unregistered
+devices are dropped and counted (`gateway_dialout_unknown_target_total`).
+What is collected (paths, mode, interval) is decided by the *device*; in the
+demo that's nl6's `-gnmi-dialout-*` flags in `e2e/compose.yml`.
 
-nl6 exposes the OpenConfig `interfaces` model (read-only) over gNMI on port 9339,
-with a self-signed cert (`skip_verify: true`) and no authentication — that is the
-`nl6-tls-noauth` profile above.
+**Dial-in** coexists with dial-out (either or both; a config with neither is
+rejected): declare `targets:` bound to `subscription_profiles` and
+`security_profiles`, and the gateway dials and Subscribes — see the commented
+sections in `configs/gateway.yaml`. Paths are grouped into named
+**subscription profiles**, each with its own collection mode: `SAMPLE`
+re-reads its paths every `sample_interval`; `ON_CHANGE` fires only on state
+transitions (plus an optional `heartbeat_interval` resend so quiet leaves are
+still confirmed alive). At startup the gateway rejects oversubscribed
+targets — the same path twice, or a parent container together with one of its
+own leaves among one target's bound profiles.
 
 - **Add devices**: bump `-auto-count` on the `nl6` service in `e2e/compose.yml`
-  and add a `targets:` entry per extra `192.168.100.x` address. Targets are
-  dialed concurrently.
-- **Change paths, modes, or intervals**: edit the `subscription_profiles` in
-  `configs/gateway.yaml`, then `docker compose -f e2e/compose.yml restart gateway`.
-  No rebuild. See [nl6's gNMI reference](https://nl6.eu) for the full leaf list
-  (ifindex, admin/oper-status, last-change, and the complete `counters/*` set).
-- **Point at a real device**: give the `gateway` its own network instead of
-  `network_mode: "service:nl6"`, add a target with the device's address, and give
-  it a security profile — mTLS via `ca_cert`/`client_cert`/`client_key`, and
-  credentials via `username_env`/`password_env` (environment variable *names*;
-  the values come from the container environment, never the YAML).
+  and add a `dialout.devices:` entry per extra `192.168.100.x` address.
+- **Change paths, modes, or intervals**: dial-out collection is configured on
+  the device — edit the `-gnmi-dialout-*` flags on the `nl6` service
+  (`-gnmi-dialout-sub-mode sample|on-change`, `-gnmi-dialout-interval`), then
+  `docker compose -f e2e/compose.yml up -d nl6`. See
+  [nl6's gNMI reference](https://nl6.eu) for the full leaf list.
+- **Point at a real device (dial-in)**: add a target with the device's address
+  and give it a security profile — mTLS via `ca_cert`/`client_cert`/`client_key`,
+  and credentials via `username_env`/`password_env` (environment variable
+  *names*; the values come from the container environment, never the YAML).
 - **Point at a real Kafka cluster**: the `kafka:` block optionally takes
   `client_id`, `compression` (`none`/`gzip`/`snappy`/`lz4`/`zstd`), `tls` (+
   `tls_skip_verify`), and `sasl_mechanism` (`PLAIN`/`SCRAM-SHA-256`/
@@ -140,23 +137,30 @@ with a self-signed cert (`skip_verify: true`) and no authentication — that is 
 With `metrics_port` set (the demo uses 9090), the gateway serves Prometheus
 metrics at `http://localhost:9090/metrics`:
 
-- `gateway_subscription_up{target, profile}` — 1 once the profile has delivered
-  a response and no subscribe error has been seen since, 0 otherwise. This is
-  the health signal: a target with one rejected profile and one streaming
-  profile shows as *degraded* here while its logs still scroll happily. Pair
-  with `rate(gateway_records_produced_total)` to also catch silent stalls
-  (a hung device that stops sending without erroring).
+- `gateway_dialout_streams_active` — currently open dial-out Publish streams
+  (the demo holds 3, one per nl6 device). Compare with nl6's own view at
+  `GET /api/v1/gnmi/dialout/status`.
+- `gateway_dialout_updates_received_total{target}` — dial-out notifications
+  accepted, per registry device name.
+- `gateway_dialout_unknown_target_total` — dial-out notifications dropped
+  because their `Prefix.Target` matched no `dialout.devices` entry
+  (deliberately unlabelled — the incoming value is peer-controlled and would
+  leak cardinality; it appears in the gateway log instead).
+- `gateway_subscription_up{target, profile}` — dial-in health: 1 once the
+  profile has delivered a response and no subscribe error has been seen since,
+  0 otherwise. A target with one rejected profile and one streaming profile
+  shows as *degraded* here while its logs still scroll happily. Pair with
+  `rate(gateway_records_produced_total)` to also catch silent stalls.
 - `gateway_subscribe_errors_total{target, profile}` — subscribe errors.
 - `gateway_records_produced_total{target}` — records successfully produced to
   Kafka (broker-acknowledged, counted in the async produce callback).
 - `gateway_kafka_produce_errors_total` — failed produce attempts.
-- `gateway_dial_failures_total{target}` — failed gNMI dial attempts (each is
-  followed by a retry).
+- `gateway_dial_failures_total{target}` — failed gNMI dial-in attempts (each
+  is followed by a retry).
 
-Unset `metrics_port` and the gateway opens no listener at all. (The port is
-published on the `nl6` compose service because the gateway shares its network
-namespace.) The in-stack Prometheus scrapes this endpoint too (job `gateway`),
-next to the telemetry from the exporter (job `telemetry`).
+Unset `metrics_port` and the gateway opens no listener at all. The in-stack
+Prometheus scrapes this endpoint too (job `gateway`), next to the telemetry
+from the exporter (job `telemetry`).
 
 ## Output format
 
@@ -238,7 +242,7 @@ make down                                  # tear down
 ├── README.md
 ├── go.mod / go.sum
 ├── cmd/
-│   ├── gateway/              # subscribe loop, one goroutine per host
+│   ├── gateway/              # dial-out listener + dial-in subscribe loops
 │   │   ├── Dockerfile
 │   │   └── main.go
 │   └── exporter/             # Kafka → Prometheus bridge (e2e stack only)
@@ -248,6 +252,7 @@ make down                                  # tear down
     ├── config/
     │   ├── config.go         # shared field types + YAML loader
     │   └── gateway.go        # Gateway type, LoadGateway, validate
+    ├── dialout/server.go     # gNMIReverse Publish server (dial-out collector)
     ├── exporter/exporter.go  # record state store + Prometheus collector
     ├── gnmi/
     │   ├── client.go         # dial-with-retry, SubscribeRequest builder
@@ -258,12 +263,23 @@ make down                                  # tear down
 ## Notes
 
 - nl6 puts each simulated device on its own IP inside a Linux TUN/network
-  namespace, not on the container's default interface. The `gateway` joins that
-  namespace via `network_mode: "service:nl6"` to reach `192.168.100.x:9339`;
-  Kafka stays reachable because nl6 is on the compose bridge network.
-- nl6's gNMI is read-only (Capabilities/Get/Subscribe; no Set) and serves TLS
-  with a self-signed cert, so the gateway uses `skip_verify: true` and no
-  credentials.
+  namespace and forwards their outbound traffic **without SNAT**, so dial-out
+  connections arrive at the gateway sourced from `192.168.100.x`. The reply
+  path needs a route back: nl6 holds a static address (`172.28.0.10`) on the
+  compose network and the `gateway-route` sidecar (which shares the gateway's
+  netns, since the gateway image is distroless) keeps
+  `ip route replace 192.168.100.0/24 via 172.28.0.10` installed. No namespace
+  sharing between gateway and nl6 — that coupling died with dial-in.
+- The demo's dial-out is plaintext (`-gnmi-dialout-tls=false` on nl6, no
+  `dialout.tls` on the gateway), mirroring the old demo's `skip_verify`
+  pragmatism. Real deployments should set `dialout.tls` and drop the nl6 flag.
+- Demo trade-off: nl6 dial-out runs one subscription per device, so the demo
+  samples the full `/interfaces/interface[name=*]/state` subtree every 5s —
+  status leaves included. The old dial-in demo's ON_CHANGE semantics for
+  status are gone; the dashboard data is a superset.
+- nl6 resolves the dial-out collector hostname at startup and exits if it
+  can't, hence `depends_on: gateway` on the nl6 service (plus
+  `restart: unless-stopped` as a belt-and-braces).
 - Kafka and Prometheus data live in the container layer. `make down` wipes
   everything.
 - `kafka:3.9.1` and `prometheus:v3.5.0` are pinned. `nl6` and `kafka-ui` track

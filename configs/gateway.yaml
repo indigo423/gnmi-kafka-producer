@@ -1,5 +1,12 @@
-# gateway config — gNMI subscriber that produces JSON records to Kafka.
+# gateway config — gNMI collector that produces JSON records to Kafka.
 # In k8s this is the contents of a ConfigMap mounted into the gateway Deployment.
+#
+# The gateway supports two collection modes, independently optional (at least
+# one must be configured):
+#   dial-in:  the gateway dials targets: and Subscribes (see the commented
+#             sections below)
+#   dial-out: devices push telemetry to the dialout: listener (Arista
+#             gNMIReverse) — what the demo uses; nl6's devices dial out.
 
 kafka:
   brokers: ["kafka:9092"]
@@ -12,13 +19,57 @@ kafka:
   # username_env: KAFKA_USER           # env var NAMES; values from the environment
   # password_env: KAFKA_PASS
 
-# Prometheus metrics at http://:9090/metrics (unset to disable). Includes
-# gateway_subscription_up{target,profile} — a degraded target (one profile
-# rejected, the other streaming) is visible here, not in the logs.
+# Prometheus metrics at http://:9090/metrics (unset to disable). Includes the
+# dial-out series (gateway_dialout_streams_active, ..._updates_received_total,
+# ..._unknown_target_total) and, for dial-in targets,
+# gateway_subscription_up{target,profile}.
 metrics_port: 9090
 
+# gNMI dial-out listener (Arista gNMIReverse): devices open the connection and
+# push Publish streams here. Incoming notifications carry the device identity
+# in-band (Notification.Prefix.Target = the device's management IP) and are
+# matched against the devices: registry — updates from unregistered devices
+# are dropped and counted. Omitting tls: makes the listener plaintext, which
+# matches the demo's `-gnmi-dialout-tls=false` on nl6; give real deployments a
+# server certificate:
+# tls:
+#   cert_file: /etc/gateway/certs/server.crt
+#   key_file:  /etc/gateway/certs/server.key
+dialout:
+  listen: :57400
+  # Device registry: address is matched against Prefix.Target; name and labels
+  # enrich the device's records exactly like a dial-in target's ("device",
+  # "interface", "timestamp", and "target" are reserved label keys). The
+  # addresses are nl6's auto-created per-device IPs.
+  devices:
+    - name: nl6-dev-01
+      address: 192.168.100.1
+      labels:
+        role: leaf
+        region: lab
+        vendor: nl6
+    - name: nl6-dev-02
+      address: 192.168.100.2
+      labels:
+        role: leaf
+        region: lab
+        vendor: nl6
+    - name: nl6-dev-03
+      address: 192.168.100.3
+      labels:
+        role: leaf
+        region: lab
+        vendor: nl6
+
+# ---------------------------------------------------------------------------
+# Dial-in mode ("point at a real device"): declare targets and the gateway
+# dials and Subscribes. Fully supported alongside dial-out — uncomment and
+# adapt. What the device streams is decided here (subscription_profiles); in
+# dial-out mode the device decides (nl6: -gnmi-dialout-* flags).
+# ---------------------------------------------------------------------------
+
 # Shared gNMI dial defaults. Authentication and transport security live in
-# security_profiles below, referenced per target.
+# security_profiles, referenced per target.
 gnmi:
   port: 9339               # default port for target addresses without one
   encoding: json_ietf
@@ -27,76 +78,47 @@ gnmi:
 # Named connection-security profiles. TLS with verified certificates is the
 # default; skip_verify/insecure are explicit opt-outs. Credentials are
 # referenced by environment variable name (username_env/password_env) — never
-# stored in this file. nl6 serves TLS with a self-signed cert and no auth.
-security_profiles:
-  nl6-tls-noauth:
-    skip_verify: true
-  # core-mtls:                             # example: production mTLS profile
-  #   ca_cert: /etc/gateway/certs/ca.crt
-  #   client_cert: /etc/gateway/certs/client.crt
-  #   client_key: /etc/gateway/certs/client.key
-  #   username_env: CORE_SWITCH_USER
-  #   password_env: CORE_SWITCH_PASS
+# stored in this file.
+# security_profiles:
+#   nl6-tls-noauth:                        # nl6 dial-in: self-signed, no auth
+#     skip_verify: true
+#   core-mtls:                             # example: production mTLS profile
+#     ca_cert: /etc/gateway/certs/ca.crt
+#     client_cert: /etc/gateway/certs/client.crt
+#     client_key: /etc/gateway/certs/client.key
+#     username_env: CORE_SWITCH_USER
+#     password_env: CORE_SWITCH_PASS
 
-# Named subscription profiles. Each target subscribes to the profiles listed in
-# its subscriptions: binding, over one gNMI connection (one Subscribe RPC per
-# profile). SAMPLE requires sample_interval; ON_CHANGE fires on state
+# Named subscription profiles. Each target subscribes to the profiles listed
+# in its subscriptions: binding, over one gNMI connection (one Subscribe RPC
+# per profile). SAMPLE requires sample_interval; ON_CHANGE fires on state
 # transitions, with heartbeat_interval forcing a resend when a leaf stays
 # quiet. Overlapping or duplicate paths across one target's bound profiles are
 # rejected at startup (oversubscription).
-# nl6 exposes the OpenConfig interfaces model (read-only). Fuller leaf list at
-# https://nl6.eu (gNMI reference): ifindex, last-change, and the full counters/*
-# set (unicast/multicast/broadcast pkts, discards, errors) are also available.
-subscription_profiles:
-  interface-counters:
-    mode: SAMPLE
-    sample_interval: 5s
-    paths:
-      - /interfaces/interface[name=*]/state/counters/in-octets
-      - /interfaces/interface[name=*]/state/counters/out-octets
-  interface-status:
-    mode: ON_CHANGE
-    heartbeat_interval: 5m
-    paths:
-      - /interfaces/interface[name=*]/state/admin-status
-      - /interfaces/interface[name=*]/state/oper-status
+# subscription_profiles:
+#   interface-counters:
+#     mode: SAMPLE
+#     sample_interval: 5s
+#     paths:
+#       - /interfaces/interface[name=*]/state/counters/in-octets
+#       - /interfaces/interface[name=*]/state/counters/out-octets
+#   interface-status:
+#     mode: ON_CHANGE
+#     heartbeat_interval: 5m
+#     paths:
+#       - /interfaces/interface[name=*]/state/admin-status
+#       - /interfaces/interface[name=*]/state/oper-status
 
 # Target registry. Each target names a device, its address (port from
 # gnmi.port unless written as "host:port"), a security profile, and the
-# subscription profiles to collect. Labels are free-form key/values injected
-# into every record for the target ("device", "interface", "timestamp", and
-# "target" are reserved). Targets are dialed concurrently. The addresses are
-# nl6's auto-created per-device TUN IPs, reachable because the gateway shares
-# nl6's network namespace (see e2e/compose.yml).
-targets:
-  - name: nl6-dev-01
-    address: 192.168.100.1
-    security: nl6-tls-noauth
-    labels:
-      role: leaf
-      region: lab
-      vendor: nl6
-    subscriptions:
-      - interface-counters
-      - interface-status
-  - name: nl6-dev-02
-    address: 192.168.100.2
-    security: nl6-tls-noauth
-    labels:
-      role: leaf
-      region: lab
-      vendor: nl6
-    subscriptions:
-      - interface-counters
-      - interface-status
-  - name: nl6-dev-03
-    address: 192.168.100.3
-    security: nl6-tls-noauth
-    labels: 
-      role: leaf
-      region: lab
-      vendor: nl6
-    subscriptions:
-      - interface-counters
-      - interface-status
-
+# subscription profiles to collect. Labels work as in dialout.devices.
+# Targets are dialed concurrently.
+# targets:
+#   - name: core-switch-01
+#     address: 10.0.0.1
+#     security: core-mtls
+#     labels:
+#       role: core
+#     subscriptions:
+#       - interface-counters
+#       - interface-status
