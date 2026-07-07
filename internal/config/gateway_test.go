@@ -378,7 +378,7 @@ func TestValidateDialout(t *testing.T) {
 		mutate  func(*Dialout)
 		wantErr string // substring; empty means valid
 	}{
-		{"valid plaintext", func(d *Dialout) {}, ""},
+		{"valid plaintext", func(_ *Dialout) {}, ""},
 		{"valid TLS pair", func(d *Dialout) {
 			d.TLS = &DialoutTLS{CertFile: "/c.crt", KeyFile: "/c.key"}
 		}, ""},

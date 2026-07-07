@@ -123,9 +123,10 @@ func dialClient(t *testing.T, addr string, creds credentials.TransportCredential
 	return gnmireverse.NewGNMIReverseClient(cc)
 }
 
-// counterSample builds a SubscribeResponse carrying one in-octets sample, with
-// the device identity in-band via Prefix.Target (as nl6 does).
-func counterSample(target, iface string, octets uint64, ts time.Time) *gnmipb.SubscribeResponse {
+// counterSample builds a SubscribeResponse carrying one in-octets sample for
+// eth0, with the device identity in-band via Prefix.Target (as nl6 does).
+func counterSample(target string, octets uint64, ts time.Time) *gnmipb.SubscribeResponse {
+	const iface = "eth0"
 	return &gnmipb.SubscribeResponse{
 		Response: &gnmipb.SubscribeResponse_Update{
 			Update: &gnmipb.Notification{
@@ -169,8 +170,8 @@ func TestPublishAttributesAndEnriches(t *testing.T) {
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	publish(t, client,
-		counterSample("192.168.100.1", "eth0", 1000, base),
-		counterSample("192.168.100.1", "eth0", 2000, base.Add(10*time.Second)),
+		counterSample("192.168.100.1", 1000, base),
+		counterSample("192.168.100.1", 2000, base.Add(10*time.Second)),
 	)
 
 	first := sink.next(t)
@@ -200,12 +201,12 @@ func TestRateSurvivesReconnect(t *testing.T) {
 	client := dialClient(t, addr, insecure.NewCredentials())
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	publish(t, client, counterSample("192.168.100.1", "eth0", 1000, base))
+	publish(t, client, counterSample("192.168.100.1", 1000, base))
 	sink.next(t)
 
 	// New stream = the device reconnected. The next sample must rate against
 	// the pre-reconnect baseline.
-	publish(t, client, counterSample("192.168.100.1", "eth0", 2000, base.Add(10*time.Second)))
+	publish(t, client, counterSample("192.168.100.1", 2000, base.Add(10*time.Second)))
 	rec := sink.next(t)
 	if got := rec.fields["in_octets_bps"]; got != 800.0 {
 		t.Fatalf("post-reconnect in_octets_bps = %v, want 800 (rate state lost with the stream?)", got)
@@ -218,7 +219,7 @@ func TestUnknownTargetDroppedAndCounted(t *testing.T) {
 	client := dialClient(t, addr, insecure.NewCredentials())
 
 	before := counterValue(t, "gateway_dialout_unknown_target_total", nil)
-	publish(t, client, counterSample("10.9.9.9", "eth0", 1000, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+	publish(t, client, counterSample("10.9.9.9", 1000, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 	sink.expectNone(t)
 	if got := counterValue(t, "gateway_dialout_unknown_target_total", nil); got != before+1 {
 		t.Fatalf("unknown_target_total = %v, want %v", got, before+1)
@@ -236,7 +237,7 @@ func TestStreamGaugeAndUpdateCounter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	if err := stream.Send(counterSample("192.168.100.1", "eth0", 1, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))); err != nil {
+	if err := stream.Send(counterSample("192.168.100.1", 1, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	sink.next(t) // handler has seen the update, so the stream is open
@@ -265,7 +266,7 @@ func TestTLSListener(t *testing.T) {
 		client := dialClient(t, addr, insecure.NewCredentials())
 		stream, err := client.Publish(context.Background())
 		if err == nil {
-			_ = stream.Send(counterSample("192.168.100.1", "eth0", 1, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+			_ = stream.Send(counterSample("192.168.100.1", 1, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 			_, err = stream.CloseAndRecv()
 		}
 		if err == nil {
@@ -276,7 +277,7 @@ func TestTLSListener(t *testing.T) {
 	t.Run("TLS client publishes", func(t *testing.T) {
 		creds := credentials.NewTLS(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
 		client := dialClient(t, addr, creds)
-		publish(t, client, counterSample("192.168.100.1", "eth0", 1000, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
+		publish(t, client, counterSample("192.168.100.1", 1000, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)))
 		if rec := sink.next(t); rec.target != "d1" {
 			t.Fatalf("record target = %q, want d1", rec.target)
 		}
